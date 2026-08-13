@@ -1,7 +1,7 @@
 # 🚀 Science Week Backend Project (ProjectScientDay2568)
 
-ระบบ Backend API สำหรับงานสัปดาห์วิทยาศาสตร์ คณะวิทยาศาสตร์และเทคโนโลยี มหาวิทยาลัยราชภัฏกาญจนบุรี  
-พัฒนาด้วย **.NET 8 (ASP.NET Core Web API)** พร้อมระบบยืนยันตัวตน (**ASP.NET Core Identity / JWT**), **Entity Framework Core (SQL Server)**, **Real-time Update (SignalR)**, และระบบสร้างใบประกาศนียบัตร PDF (**QuestPDF / SkiaSharp**)
+ระบบ Backend API สำหรับงานสัปดาห์วิทยาศาสตร์ คณะวิทยาศาสตร์และเทคโนโลยี มหาวิทยาลัยราชภัฏกาญจนบุรี
+พัฒนาด้วย **.NET 8 (ASP.NET Core Web API)** พร้อมระบบยืนยันตัวตน (ASP.NET Core Identity / JWT), Entity Framework Core (SQL Server), Real-time Update (SignalR), และระบบสร้างใบประกาศนียบัตร PDF (QuestPDF/SkiaSharp)
 
 ---
 
@@ -21,7 +21,7 @@ backend/
 │   │   ├── CompetitionTypeController.cs   # จัดการประเภทการแข่งขัน
 │   │   ├── CompetitionYearController.cs   # จัดการข้อมูลการแข่งขันในแต่ละปี
 │   │   ├── EducationLevelController.cs    # จัดการระดับการศึกษา (ประถม/ม.ต้น/ม.ปลาย)
-│   │   ├── ExportController.cs            # ส่งออกข้อมูลเป็น PDF / Excel / Zip
+│   │   ├── ExportController.cs           # ส่งออกข้อมูลเป็น PDF / Excel / Zip
 │   │   ├── HomeBannersController.cs       # จัดการรูปภาพแบนเนอร์หน้าแรก
 │   │   ├── IndividualCheckinController.cs # ระบบเช็คอินรายบุคคล / สแกนเข้าร่วม
 │   │   ├── MatchController.cs             # จัดการการจับคู่แข่งขันและผลการแข่งขัน
@@ -38,7 +38,7 @@ backend/
 │   │   ├── TeamProjectController.cs       # จัดการอัปโหลดไฟล์โครงการ PDF ของทีม
 │   │   ├── TeamRegistrationController.cs  # ระบบสมัครแข่งขันของทีม
 │   │   ├── TrainingRegistrationsController.cs # ระบบลงทะเบียนเข้าร่วมอบรม/เวิร์กช็อป
-│   │   ├── TrainingtopicsController.cs    # จัดการหัวข้อการอบรม/เวิร์กช็อป
+│   │   ├── TrainingtopicsController.cs   # จัดการหัวข้อการอบรม/เวิร์กช็อป
 │   │   └── YearController.cs              # จัดการปีการแข่งขัน
 │   │
 │   ├── Data/                              # [Data Access Layer]
@@ -75,28 +75,34 @@ backend/
 │   ├── Migrations/                        # [EF Core Migrations] ประวัติการเปลี่ยนแปลงโครงสร้าง DB
 │   │
 │   ├── Models/                            # [Domain Models / Entity Definitions]
-│   │   ├── ApplicationUser.cs             # โมเดลผู้ใช้งาน (สืบทอดจาก IdentityUser)
-│   │   ├── Branch.cs                      # โมเดลสาขาวิชา
-│   │   ├── CertificateConfig.cs           # โมเดลการตั้งค่าใบประกาศนียบัตรประจำปี
-│   │   ├── Competition.cs                 # โมเดลการแข่งขัน
-│   │   ├── CompetitionLevel.cs            # โมเดลระดับการแข่งขันย่อย
-│   │   ├── CompetitionType.cs             # โมเดลประเภทการแข่งขัน
-│   │   ├── CompetitionYear.cs             # โมเดลการแข่งขันประจำปี
-│   │   ├── EducationLevel.cs              # โมเดลระดับการศึกษา
-│   │   ├── HomeBanner.cs                  # โมเดลแบนเนอร์หน้าแรก
-│   │   ├── Match.cs                       # โมเดลตารางการตารางแข่งขัน/จับคู่
-│   │   ├── News.cs                        # โมเดลข่าวประชาสัมพันธ์
-│   │   ├── RewardType.cs                  # โมเดลประเภทรางวัล
-│   │   ├── Schools.cs                     # โมเดลโรงเรียน/สถานศึกษา
-│   │   ├── Student.cs                     # โมเดลข้อมูลนักเรียน
-│   │   ├── SystemSetting.cs               # โมเดลตั้งค่าระบบและอินเทอร์เฟซ
-│   │   ├── Team.cs                        # โมเดลทีมแข่งและผู้จัดการทีม
-│   │   ├── TeamAdvisor.cs                 # โมเดลครูที่ปรึกษาประจำทีม
-│   │   ├── TeamCertificate.cs             # โมเดลออกเลขเกียรติบัตรให้ทีม
-│   │   ├── TeamProject.cs                 # โมเดลโครงการ/เอกสารแนบของทีม
-│   │   ├── TrainingRegistration.cs        # โมเดลการลงทะเบียนอบรม
-│   │   ├── Trainingtopic.cs               # โมเดลหัวข้อการอบรม
-│   │   ├── Year.cs                        # โมเดลปีการแข่งขัน
+│   │   ├── 📘 [Master Data Models]
+│   │   │   ├── ApplicationUser.cs         # โมเดลผู้ใช้งาน (สืบทอดจาก IdentityUser)
+│   │   │   ├── Branch.cs                  # โมเดลสาขาวิชา
+│   │   │   ├── Competition.cs             # โมเดลการแข่งขัน
+│   │   │   ├── CompetitionType.cs         # โมเดลประเภทการแข่งขัน
+│   │   │   ├── EducationLevel.cs          # โมเดลระดับการศึกษา
+│   │   │   ├── RewardType.cs              # โมเดลประเภทรางวัล
+│   │   │   ├── Schools.cs                 # โมเดลโรงเรียน/สถานศึกษา
+│   │   │   ├── Trainingtopic.cs           # โมเดลหัวข้อการอบรม
+│   │   │   └── Year.cs                    # โมเดลปีการแข่งขัน
+│   │   │
+│   │   ├── 🔄 [Transaction Data Models]
+│   │   │   ├── CompetitionLevel.cs        # โมเดลระดับการแข่งขันย่อย
+│   │   │   ├── CompetitionYear.cs         # โมเดลการแข่งขันประจำปี
+│   │   │   ├── Match.cs                   # โมเดลตารางการตารางแข่งขัน/จับคู่
+│   │   │   ├── Student.cs                 # โมเดลข้อมูลนักเรียน
+│   │   │   ├── Team.cs                    # โมเดลทีมแข่งและผู้จัดการทีม
+│   │   │   ├── TeamAdvisor.cs             # โมเดลครูที่ปรึกษาประจำทีม
+│   │   │   ├── TeamCertificate.cs         # โมเดลออกเลขเกียรติบัตรให้ทีม
+│   │   │   ├── TeamProject.cs             # โมเดลโครงการ/เอกสารแนบของทีม
+│   │   │   └── TrainingRegistration.cs    # โมเดลการลงทะเบียนอบรม
+│   │   │
+│   │   ├── ⚙️ [System & Config Models]
+│   │   │   ├── CertificateConfig.cs       # โมเดลการตั้งค่าใบประกาศนียบัตรประจำปี
+│   │   │   ├── HomeBanner.cs              # โมเดลแบนเนอร์หน้าแรก
+│   │   │   ├── News.cs                    # โมเดลข่าวประชาสัมพันธ์
+│   │   │   └── SystemSetting.cs           # โมเดลตั้งค่าระบบและอินเทอร์เฟซ
+│   │   │
 │   │   └── Dtos/                          # Data Transfer Objects สำหรับ Request/Response API
 │   │       ├── Auth/                      # DTO ระบบเข้าสู่ระบบ/สมัครสมาชิก
 │   │       ├── Competition/               # DTO สำหรับจัดการการแข่งขัน
@@ -306,7 +312,7 @@ backend/
   - `FacultyDeanTitle` / `FacultyDeanName` / `FacultyDeanSignature` - ตำแหน่ง ชื่อ และพาธลายเซ็นคณบดีคณะ
   - `UniversityLogoPath` / `InstituteLogoPath` - พาธภาพโลโก้มหาวิทยาลัยและสถาบัน
 
-### 16. `Schools` (Model: `Schools`)
+### 16. `School` (Model: `Schools`)
 ตารางข้อมูลโรงเรียนและสถานศึกษา
 - **Primary Key:** `school_code` (int, Identity/Key)
 - **Fields:**
@@ -378,6 +384,43 @@ backend/
   - `Prefix` (nvarchar(max)), `FirstName` (nvarchar(100)), `LastName` (nvarchar(100)) - ข้อมูลผู้สมัครอบรม
   - `RegisteredAt` (datetime) - วันเวลาที่ลงทะเบียน
   - `Status` (nvarchar(max)) - สถานะการลงทะเบียน (เช่น "ลงทะเบียนแล้ว")
+
+---
+
+### 📌 การจำแนกประเภทตาราง (Classification of Database Tables)
+
+เพื่อความเข้าใจในสถาปัตยกรรมข้อมูล ตารางทั้งหมด 22 ตารางสามารถแบ่งออกตามลักษณะการใช้งานได้ดังนี้:
+
+#### 1. 📘 Master File / Master Data (ตารางอ้างอิงหลัก)
+ข้อมูลอ้างอิงพื้นฐานของระบบที่มีการเปลี่ยนแปลงน้อย ใช้สำหรับอ้างอิงในตารางอื่นๆ:
+- `AspNetUsers` (ผู้ใช้งานระบบ)
+- `Years` (ปีการแข่งขันหลัก)
+- `CompetitionTypes` (ประเภทการแข่งขัน)
+- `Competitions` (รายการแข่งขันหลัก)
+- `EducationLevels` (ระดับการศึกษา)
+- `RewardTypes` (ประเภทรางวัล)
+- `School` (สถานศึกษา/โรงเรียน)
+- `Branches` (สาขาวิชา)
+- `Trainingtopics` (หัวข้อการอบรม/เวิร์กช็อป)
+
+#### 2. 🔄 Transaction Data (ตารางรายการ / กิจกรรม)
+ข้อมูลที่เกิดจากการสมัคร ทำรายการ หรือประมวลผลตามกิจกรรม/ช่วงเวลา:
+- `CompetitionYears` (รายการแข่งขันประจำปี)
+- `CompetitionLevels` (ระดับย่อยของการแข่งขันแต่ละรายการในปีนั้นๆ)
+- `Teams` (ทีมสมัครเข้าแข่งขัน)
+- `Students` (นักเรียน/ผู้เข้าแข่งขันประจำทีม)
+- `TeamAdvisors` (ครูที่ปรึกษาประจำทีม)
+- `TeamProjects` (ไฟล์โครงการ/ผลงานของทีม)
+- `TeamCertificates` (เกียรติบัตรและเลขรันเกียรติบัตรของทีม)
+- `Matches` (ตารางจับคู่แข่งขันและผลการแข่งขัน)
+- `TrainingRegistrations` (การลงทะเบียนเข้าร่วมอบรม)
+
+#### 3. ⚙️ System & Config Data (ตารางตั้งค่าระบบ)
+ข้อมูลการตั้งค่า ค่าคอนฟิก และคอนเทนต์สำหรับแสดงผลหน้าเว็บไซต์:
+- `CertificateConfigs` (ตั้งค่าแม่แบบเกียรติบัตรและผู้ลงนาม)
+- `News` (ข่าวประชาสัมพันธ์)
+- `SystemSettings` (ตั้งค่าระบบ ธีม และสวิตช์เปิด/ปิดเมนู)
+- `HomeBanners` (รูปภาพสไลด์แบนเนอร์)
 
 ---
 
