@@ -1,4 +1,6 @@
-﻿using ProjectScientDay2568.Models.Dtos.Team;
+﻿using Microsoft.AspNetCore.RateLimiting;
+using ProjectScientDay2568.Helper;
+using ProjectScientDay2568.Models.Dtos.Team;
 
 [Route("api/[controller]")]
 [ApiController]
@@ -26,6 +28,7 @@ public class TeamProjectController : ControllerBase
     }
 
     [HttpPost]
+    [EnableRateLimiting(RateLimitPolicies.Upload)]
     public async Task<IActionResult> Create([FromForm] TeamProjectCreateDto dto)
     {
         var result = await _teamProject.CreateAsync(dto);
@@ -33,6 +36,7 @@ public class TeamProjectController : ControllerBase
     }
 
     [HttpPut("{id:int}")]
+    [EnableRateLimiting(RateLimitPolicies.Upload)]
     public async Task<IActionResult> Update(int id, [FromForm] TeamProjectUpdateDto dto)
     {
         var result = await _teamProject.UpdateAsync(id, dto);

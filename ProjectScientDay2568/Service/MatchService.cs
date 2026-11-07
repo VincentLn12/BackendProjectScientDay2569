@@ -1,4 +1,5 @@
-﻿using AutoMapper.QueryableExtensions;
+﻿using System.Text.Json;
+using AutoMapper.QueryableExtensions;
 using Microsoft.AspNetCore.SignalR;
 using ProjectScientDay2568.Hubs;
 using ProjectScientDay2568.Models.Dtos.Match;
@@ -23,19 +24,96 @@ namespace ProjectScientDay2568.Service
         }
 
         /// <summary>
-        /// ดึงแมตช์ทั้งหมดของ competition level เป็น DTO
-        /// ใช้ ProjectTo เพื่อให้ EF สร้าง DTO จาก DB โดยตรง (ไม่ต้อง Include)
+        /// ตรวจสอบและสร้างตาราง MatchDrawLogs โดยอัตโนมัติหากยังไม่มีในฐานข้อมูล
         /// </summary>
-        public async Task<List<MatchDto>> GetMatchesByCompetitionLevelIdAsync(int competitionLevelID)
+        public async Task EnsureTableCreatedAsync()
+        {
+            try
+            {
+                var sql = @"
+                    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'MatchDrawLogs')
+                    BEGIN
+                        CREATE TABLE [MatchDrawLogs] (
+                            [Id] INT IDENTITY(1,1) NOT NULL,
+                            [CompetitionLevelID] INT NOT NULL,
+                            [Round] INT NOT NULL,
+                            [ActionType] NVARCHAR(MAX) NOT NULL DEFAULT '',
+                            [Note] NVARCHAR(MAX) NOT NULL DEFAULT '',
+                            [MatchesJson] NVARCHAR(MAX) NOT NULL DEFAULT '',
+                            [CreatedAt] DATETIME2 NOT NULL,
+                            CONSTRAINT [PK_MatchDrawLogs] PRIMARY KEY ([Id]),
+                            CONSTRAINT [FK_MatchDrawLogs_CompetitionLevels_CompetitionLevelID] 
+                                FOREIGN KEY ([CompetitionLevelID]) REFERENCES [CompetitionLevels] ([CompetitionLevelID]) ON DELETE CASCADE
+                        );
+                    END;";
+                await _context.Database.ExecuteSqlRawAsync(sql);
+            }
+            catch
+            {
+                // หากตารางมีอยู่แล้วหรือเกิดข้อผิดพลาด ให้ปล่อยข้ามไปอย่างปลอดภัย
+            }
+        }
+
+        /// <summary>
+        /// ดึงแมตช์ทั้งหมดของ competition level เป็น DTO
+        /// </summary>
+        public async Task<List<MatchListDto>> GetMatchesByCompetitionLevelIdAsync(int competitionLevelID)
         {
             return await _context.Matches
-             .Where(m => m.CompetitionLevelID == competitionLevelID)
-             .Include(m => m.TeamA).ThenInclude(t => t.schools)
-             .Include(m => m.TeamB).ThenInclude(t => t.schools)
-             .Include(m => m.Winner).ThenInclude(t => t.schools)
-             .AsNoTracking()
-             .ProjectTo<MatchDto>(_mapper.ConfigurationProvider)
-             .ToListAsync();
+                .Where(m => m.CompetitionLevelID == competitionLevelID)
+                .OrderBy(m => m.Round)
+                .ThenBy(m => m.Id)
+                .AsNoTracking()
+                .Select(m => new MatchListDto
+                {
+                    Id = m.Id,
+                    CompetitionLevelID = m.CompetitionLevelID,
+                    Round = m.Round,
+                    Status = m.Status,
+                    MatchTime = m.MatchTime,
+                    TeamA = m.TeamA == null ? null : new MatchTeamDto
+                    {
+                        TeamID = m.TeamA.TeamID,
+                        TeamNumberInLevel = m.TeamA.TeamNumberInLevel,
+                        school_name = m.TeamA.schools.school_name
+                    },
+                    TeamB = m.TeamB == null ? null : new MatchTeamDto
+                    {
+                        TeamID = m.TeamB.TeamID,
+                        TeamNumberInLevel = m.TeamB.TeamNumberInLevel,
+                        school_name = m.TeamB.schools.school_name
+                    },
+                    Winner = m.Winner == null ? null : new MatchTeamDto
+                    {
+                        TeamID = m.Winner.TeamID,
+                        TeamNumberInLevel = m.Winner.TeamNumberInLevel,
+                        school_name = m.Winner.schools.school_name
+                    }
+                })
+                .ToListAsync();
+        }
+
+        /// <summary>
+        /// ดึงประวัติการสุ่ม (Draw Logs) ของ competition level
+        /// </summary>
+        public async Task<List<MatchDrawLogDto>> GetDrawLogsAsync(int competitionLevelID)
+        {
+            await EnsureTableCreatedAsync();
+            return await _context.MatchDrawLogs
+                .Where(l => l.CompetitionLevelID == competitionLevelID)
+                .OrderByDescending(l => l.CreatedAt)
+                .AsNoTracking()
+                .Select(l => new MatchDrawLogDto
+                {
+                    Id = l.Id,
+                    CompetitionLevelID = l.CompetitionLevelID,
+                    Round = l.Round,
+                    ActionType = l.ActionType,
+                    Note = l.Note,
+                    MatchesJson = l.MatchesJson,
+                    CreatedAt = l.CreatedAt
+                })
+                .ToListAsync();
         }
 
         /// <summary>
@@ -53,7 +131,6 @@ namespace ProjectScientDay2568.Service
             var winner = await _context.Teams.FindAsync(winnerTeamId)
                 ?? throw new KeyNotFoundException("Winning team not found.");
 
-            // ✅ ตรวจว่าผู้ชนะต้องเป็นหนึ่งในผู้เข้าแข่งขัน เว้นกรณี TeamB == null (bye)
             bool isTeamA = match.TeamA?.TeamID == winner.TeamID;
             bool isTeamB = match.TeamB?.TeamID == winner.TeamID;
 
@@ -77,14 +154,12 @@ namespace ProjectScientDay2568.Service
             await _hubContext.Clients.Group(match.CompetitionLevelID.ToString())
                .SendAsync("ReceiveMatchUpdate", $"Match {match.Id} updated.");
 
-            // ✅ map entity ที่โหลด navigation มาแล้ว เป็น DTO
             return _mapper.Map<MatchDto>(match);
         }
 
         /// <summary>
         /// สร้างสายการแข่งขันรอบแรกและคืน MatchDto ทั้งหมด
         /// </summary>
-        // เปลี่ยนเมธอดเดิมให้รับ sampleSize (เลือกสุ่มกี่ทีม) ได้
         public async Task<List<MatchDto>> GenerateMatchBracketAsync(int competitionLevelID, int? sampleSize = null)
         {
             var competitionLevel = await _context.CompetitionLevels
@@ -95,10 +170,8 @@ namespace ProjectScientDay2568.Service
             if (competitionLevel == null)
                 throw new KeyNotFoundException("ไม่พบการแข่งขัน.");
 
-            // ลบแมตช์เดิมทั้งหมดของ level นี้
             _context.Matches.RemoveRange(competitionLevel.Matches);
 
-            // ทีมที่ได้รับการอนุมัติ/เช็คอิน
             var approvedTeams = competitionLevel.Teams
                 .Where(tt => tt.Status == SD.TeamStatus.CheckedIn)
                 .ToList();
@@ -106,7 +179,6 @@ namespace ProjectScientDay2568.Service
             if (approvedTeams.Count < 2)
                 throw new InvalidOperationException("ต้องมีอย่างน้อย 2 ทีมที่ได้รับการอนุมัติเพื่อสร้างการแข่งขัน.");
 
-            // ถ้ามีการระบุจำนวนทีมที่จะสุ่ม (สำหรับเทส)
             if (sampleSize.HasValue)
             {
                 if (sampleSize.Value < 2)
@@ -114,17 +186,19 @@ namespace ProjectScientDay2568.Service
                 if (sampleSize.Value > approvedTeams.Count)
                     throw new InvalidOperationException($"sampleSize มากกว่าจำนวนทีมที่มีอยู่ ({approvedTeams.Count})");
 
-                // สุ่มเลือกทีมตามจำนวนที่กำหนด
                 approvedTeams = approvedTeams
                     .OrderBy(_ => Guid.NewGuid())
                     .Take(sampleSize.Value)
                     .ToList();
             }
 
+            // สุ่มจับคู่เฉพาะรอบที่ 1
             var matches = GenerateBracket(approvedTeams, competitionLevelID);
 
             _context.Matches.AddRange(matches);
             await _context.SaveChangesAsync();
+
+            await SaveDrawLogInternalAsync(competitionLevelID, 1, "GENERATE_FIRST_ROUND", $"สุ่มจับคู่รอบแรก จำนวน {matches.Count} คู่");
 
             await _hubContext.Clients.Group(competitionLevelID.ToString())
                .SendAsync("ReceiveMatchUpdate", "รอบแรกถูกสร้างแล้ว");
@@ -145,7 +219,7 @@ namespace ProjectScientDay2568.Service
         }
 
         /// <summary>
-        /// สร้างรอบถัดไปจาก currentRound พร้อมเลี่ยงการจับคู่ซ้ำถ้าเป็นไปได้
+        /// สร้างรอบถัดไปจาก currentRound
         /// </summary>
         public async Task<string> GenerateNextRoundAsync(int competitionLevelID, int currentRound)
         {
@@ -175,13 +249,11 @@ namespace ProjectScientDay2568.Service
             var nextRound = currentRound + 1;
             var nextMatches = new List<Match>();
 
-            // ดึงประวัติการจับคู่ทั้งหมดใน competition นี้
             var previousMatchups = await _context.Matches
                 .Where(m => m.CompetitionLevelID == competitionLevelID && m.TeamA != null && m.TeamB != null)
                 .Select(m => new { A = m.TeamA.TeamID, B = m.TeamB.TeamID })
                 .ToListAsync();
 
-            // สุ่มทีมและพยายามหลีกเลี่ยงทีมที่เคยเจอกัน
             var shuffled = winners.OrderBy(_ => Guid.NewGuid()).ToList();
             var unpaired = new HashSet<Team>(shuffled);
 
@@ -211,7 +283,6 @@ namespace ProjectScientDay2568.Service
                 }
                 else
                 {
-                    // หากเลี่ยงไม่ได้ ให้จับคู่ทีมแรกที่เหลือ
                     var fallback = unpaired.First();
                     unpaired.Remove(fallback);
 
@@ -227,7 +298,6 @@ namespace ProjectScientDay2568.Service
                 }
             }
 
-            // ถ้าเหลือทีมเดียว (bye)
             if (unpaired.Count == 1)
             {
                 var solo = unpaired.First();
@@ -246,6 +316,8 @@ namespace ProjectScientDay2568.Service
             await _context.Matches.AddRangeAsync(nextMatches);
             await _context.SaveChangesAsync();
 
+            await SaveDrawLogInternalAsync(competitionLevelID, nextRound, "NEXT_ROUND", $"สุ่มสร้างรอบที่ {nextRound} จำนวน {nextMatches.Count} คู่");
+
             await _hubContext.Clients.Group(competitionLevelID.ToString())
               .SendAsync("ReceiveMatchUpdate", $"สร้างรอบที่ {nextRound} สำเร็จ");
 
@@ -253,7 +325,58 @@ namespace ProjectScientDay2568.Service
         }
 
         /// <summary>
-        /// ยกเลิกรอบตั้งแต่ roundNumber ขึ้นไป และ reset ผู้ชนะในรอบก่อนหน้า
+        /// ย้อนกลับไปใช้ผลการสุ่มจาก Log ในอดีต (Rollback State)
+        /// </summary>
+        public async Task<string> RollbackToLogAsync(int logId)
+        {
+            await EnsureTableCreatedAsync();
+            var log = await _context.MatchDrawLogs.FindAsync(logId)
+                ?? throw new KeyNotFoundException("ไม่พบประวัติการสุ่มที่ระบุ");
+
+            if (string.IsNullOrEmpty(log.MatchesJson))
+                throw new InvalidOperationException("ประวัติการสุ่มนี้ไม่มีข้อมูลสำหรับกู้คืน");
+
+            var snapshotMatches = JsonSerializer.Deserialize<List<MatchSnapshotDto>>(log.MatchesJson);
+            if (snapshotMatches == null || !snapshotMatches.Any())
+                throw new InvalidOperationException("ไม่สามารถอ่านข้อมูลแมตช์ในประวัตินี้ได้");
+
+            var currentMatches = await _context.Matches
+                .Where(m => m.CompetitionLevelID == log.CompetitionLevelID)
+                .ToListAsync();
+            _context.Matches.RemoveRange(currentMatches);
+
+            var restoredMatches = new List<Match>();
+            foreach (var snap in snapshotMatches)
+            {
+                Team? teamA = snap.TeamAId.HasValue ? await _context.Teams.FindAsync(snap.TeamAId.Value) : null;
+                Team? teamB = snap.TeamBId.HasValue ? await _context.Teams.FindAsync(snap.TeamBId.Value) : null;
+                Team? winner = snap.WinnerId.HasValue ? await _context.Teams.FindAsync(snap.WinnerId.Value) : null;
+
+                restoredMatches.Add(new Match
+                {
+                    CompetitionLevelID = log.CompetitionLevelID,
+                    Round = snap.Round,
+                    TeamA = teamA,
+                    TeamB = teamB,
+                    Winner = winner,
+                    Status = snap.Status ?? "Pending",
+                    MatchTime = DateTime.UtcNow.AddHours(7).AddDays(snap.Round)
+                });
+            }
+
+            await _context.Matches.AddRangeAsync(restoredMatches);
+            await _context.SaveChangesAsync();
+
+            await SaveDrawLogInternalAsync(log.CompetitionLevelID, log.Round, "ROLLBACK", $"ย้อนกลับไปใช้ผลการสุ่ม Log #{log.Id} (รอบที่ {log.Round})");
+
+            await _hubContext.Clients.Group(log.CompetitionLevelID.ToString())
+               .SendAsync("ReceiveMatchUpdate", $"ย้อนกลับไปใช้ผลการสุ่มรอบที่ {log.Round} สำเร็จ");
+
+            return $"ย้อนกลับไปใช้ผลการสุ่ม Log #{log.Id} สำเร็จ (รอบที่ {log.Round})";
+        }
+
+        /// <summary>
+        /// ยกเลิกรอบตั้งแต่ roundNumber ขึ้นไป
         /// </summary>
         public async Task<string> CancelRoundAsync(int competitionLevelID, int roundNumber)
         {
@@ -272,7 +395,6 @@ namespace ProjectScientDay2568.Service
 
             _context.Matches.RemoveRange(matchesToCancel);
 
-            // คืนค่าผู้ชนะในรอบก่อนหน้า (หากมี)
             if (roundNumber > 1)
             {
                 var previousRoundMatches = await _context.Matches
@@ -287,6 +409,8 @@ namespace ProjectScientDay2568.Service
 
             await _context.SaveChangesAsync();
 
+            await SaveDrawLogInternalAsync(competitionLevelID, roundNumber, "CANCEL_ROUND", $"ยกเลิกรอบที่ {string.Join(", ", affectedRounds)}");
+
             await _hubContext.Clients.Group(competitionLevelID.ToString())
                .SendAsync("ReceiveMatchUpdate", $"ยกเลิกรอบสำเร็จ");
 
@@ -294,7 +418,40 @@ namespace ProjectScientDay2568.Service
         }
 
         /// <summary>
-        /// ใช้ภายใน: สร้างสายรอบแรก พร้อมรองรับ bye
+        /// ภายใน: สร้าง Snapshot และลงบันทึกใน MatchDrawLog
+        /// </summary>
+        private async Task SaveDrawLogInternalAsync(int competitionLevelID, int round, string actionType, string note)
+        {
+            await EnsureTableCreatedAsync();
+            var matches = await GetMatchesByCompetitionLevelIdAsync(competitionLevelID);
+            var snapshotList = matches.Select(m => new MatchSnapshotDto
+            {
+                Id = m.Id,
+                Round = m.Round,
+                TeamAId = m.TeamA?.TeamID,
+                TeamBId = m.TeamB?.TeamID,
+                WinnerId = m.Winner?.TeamID,
+                Status = m.Status
+            }).ToList();
+
+            var json = JsonSerializer.Serialize(snapshotList);
+
+            var drawLog = new Models.MatchDrawLog
+            {
+                CompetitionLevelID = competitionLevelID,
+                Round = round,
+                ActionType = actionType,
+                Note = note,
+                MatchesJson = json,
+                CreatedAt = DateTime.UtcNow.AddHours(7)
+            };
+
+            _context.MatchDrawLogs.Add(drawLog);
+            await _context.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// สุ่มจับคู่เฉพาะรอบที่ 1 จากรายการทีมทั้งหมด
         /// </summary>
         private List<Match> GenerateBracket(List<Team> teams, int competitionLevelID)
         {
@@ -302,46 +459,46 @@ namespace ProjectScientDay2568.Service
             var currentTeams = teams.OrderBy(_ => Guid.NewGuid()).ToList();
             var round = 1;
 
-            while (currentTeams.Count > 1)
+            for (int i = 0; i < currentTeams.Count; i += 2)
             {
-                var nextRound = new List<Team>();
-
-                for (int i = 0; i < currentTeams.Count; i += 2)
+                if (i + 1 < currentTeams.Count)
                 {
-                    if (i + 1 < currentTeams.Count)
+                    matches.Add(new Match
                     {
-                        matches.Add(new Match
-                        {
-                            CompetitionLevelID = competitionLevelID,
-                            Round = round,
-                            TeamA = currentTeams[i],
-                            TeamB = currentTeams[i + 1],
-                            Status = "Pending",
-                            MatchTime = DateTime.UtcNow.AddHours(7).AddDays(round)
-                        });
-                    }
-                    else
-                    {
-                        matches.Add(new Match
-                        {
-                            CompetitionLevelID = competitionLevelID,
-                            Round = round,
-                            TeamA = currentTeams[i],
-                            TeamB = null,
-                            Winner = currentTeams[i],
-                            Status = "Bye",
-                            MatchTime = DateTime.UtcNow.AddHours(7).AddDays(round)
-                        });
-
-                        nextRound.Add(currentTeams[i]);
-                    }
+                        CompetitionLevelID = competitionLevelID,
+                        Round = round,
+                        TeamA = currentTeams[i],
+                        TeamB = currentTeams[i + 1],
+                        Status = "Pending",
+                        MatchTime = DateTime.UtcNow.AddHours(7).AddDays(round)
+                    });
                 }
-
-                currentTeams = nextRound;
-                round++;
+                else
+                {
+                    matches.Add(new Match
+                    {
+                        CompetitionLevelID = competitionLevelID,
+                        Round = round,
+                        TeamA = currentTeams[i],
+                        TeamB = null,
+                        Winner = currentTeams[i],
+                        Status = "Bye",
+                        MatchTime = DateTime.UtcNow.AddHours(7).AddDays(round)
+                    });
+                }
             }
 
             return matches;
         }
+    }
+
+    public class MatchSnapshotDto
+    {
+        public int Id { get; set; }
+        public int Round { get; set; }
+        public int? TeamAId { get; set; }
+        public int? TeamBId { get; set; }
+        public int? WinnerId { get; set; }
+        public string? Status { get; set; }
     }
 }

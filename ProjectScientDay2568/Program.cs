@@ -11,6 +11,7 @@ global using ProjectScientDay2568.Service;
 global using Microsoft.AspNetCore.Mvc;
 global using ProjectScientDay2568.Models.Dtos.Competition;
 using ProjectScientDay2568.Mappings;
+using ProjectScientDay2568.Helper;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -25,6 +26,9 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddDefaultTokenProviders();
 builder.Services.AddAutoMapper(typeof(MappingProfile).Assembly);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<AuditLogService>();
+builder.Services.AddAppRateLimiting(builder.Configuration);
 builder.Services.AddScoped<YearService>();
 builder.Services.AddScoped<CompetitionTypeService>();
 builder.Services.AddScoped<CompetitionService>();
@@ -50,6 +54,9 @@ builder.Services.AddSignalR();
 
 builder.Services.Configure<IdentityOptions>(options =>
 {
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(10);
+    options.Lockout.AllowedForNewUsers = true;
     options.Password.RequireDigit = false;
     options.Password.RequiredLength = 1;
     options.Password.RequireLowercase = false;
@@ -74,6 +81,20 @@ builder.Services.AddAuthentication(u =>
         ValidateIssuer = false,
         ValidateAudience = false
     };
+    // บัญชีที่ถูกระงับ (LockoutEnd ในอนาคต) ใช้ token ที่ออกไปแล้วต่อไม่ได้ทันที
+    u.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = async ctx =>
+        {
+            var userId = ctx.Principal?.FindFirst("id")?.Value;
+            if (string.IsNullOrEmpty(userId)) return;
+            var db = ctx.HttpContext.RequestServices.GetRequiredService<ApplicationDbContext>();
+            var threshold = AccountSuspension.Threshold;
+            var suspended = await db.ApplicationUsers.AsNoTracking()
+                .AnyAsync(x => x.Id == userId && x.LockoutEnd != null && x.LockoutEnd > threshold);
+            if (suspended) ctx.Fail("บัญชีนี้ถูกระงับการใช้งาน");
+        }
+    };
 });
 #endregion
 
@@ -83,7 +104,10 @@ builder.Services.AddCors(options =>
     {
         policy.WithOrigins(
                 "http://localhost:5173",
+                "https://localhost:5173",
+                "http://coms.kru.ac.th",
                 "https://coms.kru.ac.th",
+                "http://10.103.0.15",
                 "https://10.103.0.15"
               )
               .AllowAnyHeader()
@@ -144,7 +168,8 @@ var app = builder.Build();
 
 app.UseForwardedHeaders();
 
-//var pathBase = "/cs67/react/s14/rovmn";
+//app.UsePathBase("/RovMN");
+
 //app.UsePathBase(pathBase);
 
 // Configure the HTTP request pipeline.
@@ -159,10 +184,13 @@ app.UseHttpsRedirection();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+app.UseWebSockets();
+
 
 app.UseCors("CorsPolicy");
 
 app.UseAuthentication();
+app.UseRateLimiter(); // หลัง authentication เพื่อนับโควตาต่อบัญชีได้
 app.UseAuthorization();
 
 app.MapControllers().RequireHost("*");

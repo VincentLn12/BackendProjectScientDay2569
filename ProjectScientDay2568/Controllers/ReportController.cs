@@ -88,6 +88,92 @@ namespace ProjectScientDay2568.Controllers
                 .ThenBy(x => x.LevelName)
                 .ToList();
 
+            var levelAttendanceSummary = compLevels
+                .Select(cl =>
+                {
+                    var levelTeams = teams
+                        .Where(t => t.CompetitionLevelID == cl.CompetitionLevelID && t.Status != SD.TeamStatus.Disqualified)
+                        .ToList();
+                    var checkedInTeams = levelTeams
+                        .Where(t => t.Status == SD.TeamStatus.CheckedIn)
+                        .ToList();
+
+                    return new EducationLevelAttendanceSummaryDto
+                    {
+                        LevelID = cl.LevelID,
+                        LevelName = cl.EducationLevel?.LevelName ?? "-",
+                        RegisteredTeamCount = levelTeams.Count,
+                        RegisteredStudentCount = levelTeams.Sum(t => t.Students?.Count ?? 0),
+                        CheckedInTeamCount = checkedInTeams.Count,
+                        CheckedInStudentCount = checkedInTeams.Sum(t => t.Students?.Count ?? 0)
+                    };
+                })
+                .ToList();
+
+            var competitionAttendanceSummary = compYears
+                .Select(cy =>
+                {
+                    var competitionLevelIds = compLevels
+                        .Where(cl => cl.CompetitionYearID == cy.CompetitionYearID)
+                        .Select(cl => cl.CompetitionLevelID)
+                        .ToHashSet();
+                    var competitionTeams = teams
+                        .Where(t => t.CompetitionLevelID.HasValue && competitionLevelIds.Contains(t.CompetitionLevelID.Value) && t.Status != SD.TeamStatus.Disqualified)
+                        .ToList();
+                    var checkedInTeams = competitionTeams
+                        .Where(t => t.Status == SD.TeamStatus.CheckedIn)
+                        .ToList();
+
+                    return new CompetitionAttendanceSummaryDto
+                    {
+                        CompetitionYearID = cy.CompetitionYearID,
+                        CompetitionName = cy.Competition?.CompetitionName ?? "-",
+                        RegisteredTeamCount = competitionTeams.Count,
+                        RegisteredStudentCount = competitionTeams.Sum(t => t.Students?.Count ?? 0),
+                        CheckedInTeamCount = checkedInTeams.Count,
+                        CheckedInStudentCount = checkedInTeams.Sum(t => t.Students?.Count ?? 0),
+                        Levels = compLevels
+                            .Where(cl => cl.CompetitionYearID == cy.CompetitionYearID)
+                            .Select(cl =>
+                            {
+                                var levelTeams = competitionTeams
+                                    .Where(t => t.CompetitionLevelID == cl.CompetitionLevelID)
+                                    .ToList();
+                                var levelCheckedInTeams = levelTeams
+                                    .Where(t => t.Status == SD.TeamStatus.CheckedIn)
+                                    .ToList();
+
+                                return new EducationLevelAttendanceSummaryDto
+                                {
+                                    LevelID = cl.LevelID,
+                                    LevelName = cl.EducationLevel?.LevelName ?? "-",
+                                    RegisteredTeamCount = levelTeams.Count,
+                                    RegisteredStudentCount = levelTeams.Sum(t => t.Students?.Count ?? 0),
+                                    CheckedInTeamCount = levelCheckedInTeams.Count,
+                                    CheckedInStudentCount = levelCheckedInTeams.Sum(t => t.Students?.Count ?? 0)
+                                };
+                            })
+                            .OrderBy(x => x.LevelName)
+                            .ToList()
+                    };
+                })
+                .OrderBy(x => x.CompetitionName)
+                .ToList();
+
+            var educationLevelAttendanceSummary = levelAttendanceSummary
+                .GroupBy(x => new { x.LevelID, x.LevelName })
+                .Select(g => new EducationLevelAttendanceSummaryDto
+                {
+                    LevelID = g.Key.LevelID,
+                    LevelName = g.Key.LevelName,
+                    RegisteredTeamCount = g.Sum(x => x.RegisteredTeamCount),
+                    RegisteredStudentCount = g.Sum(x => x.RegisteredStudentCount),
+                    CheckedInTeamCount = g.Sum(x => x.CheckedInTeamCount),
+                    CheckedInStudentCount = g.Sum(x => x.CheckedInStudentCount)
+                })
+                .OrderBy(x => x.LevelName)
+                .ToList();
+
             var result = new DashboardReportDto
             {
                 TotalSchools = teams
@@ -98,6 +184,12 @@ namespace ProjectScientDay2568.Controllers
                 TotalTeams = teams.Count,
                 TotalStudents = teams.Sum(t => t.Students?.Count ?? 0),
                 TotalCompetitions = compYears.Count,
+                TotalRegisteredStudents = teams
+                    .Where(t => t.Status != SD.TeamStatus.Disqualified)
+                    .Sum(t => t.Students?.Count ?? 0),
+                TotalCheckedInStudents = teams
+                    .Where(t => t.Status == SD.TeamStatus.CheckedIn)
+                    .Sum(t => t.Students?.Count ?? 0),
                 RegisteredTeams = teams.Count(t => t.Status == SD.TeamStatus.Registered),
                 VerifiedTeams = teams.Count(t => t.Status == SD.TeamStatus.Verified),
                 ProjectRevisionTeams = teams.Count(t => t.Status == SD.TeamStatus.ProjectRevision),
@@ -112,6 +204,8 @@ namespace ProjectScientDay2568.Controllers
                     : await _context.TeamCertificates.CountAsync(c => teamIds.Contains(c.TeamID)),
                 TeamStatusSummary = teamStatusSummary,
                 CompetitionSummary = competitionSummary,
+                CompetitionAttendanceSummary = competitionAttendanceSummary,
+                EducationLevelAttendanceSummary = educationLevelAttendanceSummary,
                 SchoolSummary = teams
                     .Where(t => t.schools != null)
                     .GroupBy(t => new

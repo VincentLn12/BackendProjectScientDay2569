@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -69,8 +71,38 @@ namespace ProjectScientDay2568.Controllers
             return HandleResponse(response);
         }
 
+        // เปลี่ยนเฉพาะ "ปีที่แสดงบนหน้าเว็บ" (ใช้จากแถบหัวของแอดมิน) ไม่แตะค่าอื่น
+        [Authorize(Roles = "Admin,admin")]
+        [HttpPut("display-year/{yearId:int}")]
+        public async Task<IActionResult> SetDisplayYear(int yearId)
+        {
+            var response = new ApiResponse();
+            if (!await _context.Years.AnyAsync(y => y.YearID == yearId))
+            {
+                response.StatusCode = HttpStatusCode.NotFound;
+                response.IsSuccess = false;
+                response.ErrorMessages.Add("ไม่พบปีการจัดงาน");
+                return NotFound(response);
+            }
+
+            var setting = await _context.SystemSettings.FirstOrDefaultAsync();
+            if (setting == null)
+            {
+                setting = new SystemSetting();
+                _context.SystemSettings.Add(setting);
+            }
+            setting.HomeDisplayYearId = yearId;
+            await _context.SaveChangesAsync();
+
+            response.StatusCode = HttpStatusCode.OK;
+            response.IsSuccess = true;
+            response.Result = yearId;
+            return Ok(response);
+        }
+
         [HttpPost]
         [Consumes("multipart/form-data")]
+        [EnableRateLimiting(RateLimitPolicies.Upload)]
         public async Task<IActionResult> Post([FromForm] SystemSettingUpdateDto model)
         {
             var response = new ApiResponse();

@@ -31,6 +31,7 @@ namespace ProjectScientDay2568.Service
                     Email = user.Email,
                     CurrentRoles = string.Join(", ", userRoles),
                     SelectedRole = userRoles.FirstOrDefault(),
+                    IsSuspended = ProjectScientDay2568.Helper.AccountSuspension.IsSuspended(user),
                 });
             }
 

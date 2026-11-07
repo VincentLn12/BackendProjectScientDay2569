@@ -7,5 +7,6 @@
         public string Email { get; set; } = null!;
         public string CurrentRoles { get; set; } = null!;
         public string? SelectedRole { get; set; }
+        public bool IsSuspended { get; set; }
     }
 }

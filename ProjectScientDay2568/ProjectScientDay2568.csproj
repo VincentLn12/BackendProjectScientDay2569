@@ -4,6 +4,9 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- User uploads are runtime data, not source. Long uploaded file names exceed the
+         260-char path limit and make MSBuild/Visual Studio fail to load the project. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);wwwroot\uploads\**</DefaultItemExcludes>
   </PropertyGroup>
 
 	<ItemGroup>

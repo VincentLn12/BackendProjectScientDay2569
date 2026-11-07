@@ -1,3 +1,4 @@
+using ProjectScientDay2568.Utility;
 using ProjectScientDay2568.Models.Dtos.Report;
 
 namespace ProjectScientDay2568.Controllers
@@ -328,6 +329,113 @@ namespace ProjectScientDay2568.Controllers
                         IsMainMember = s.IsMainMember
                     })
                     .ToListAsync();
+
+                response.StatusCode = HttpStatusCode.OK;
+                response.Result = result;
+            }
+            catch (Exception ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.InternalServerError;
+                response.ErrorMessages.Add(ex.Message);
+            }
+
+            return HandleResponse(response);
+        }
+        [HttpGet("level/{levelId}/announcements")]
+        public async Task<IActionResult> GetCompetitorAnnouncements(int levelId)
+        {
+            var response = new ApiResponse();
+            try
+            {
+                var level = await _context.CompetitionLevels
+                    .AsNoTracking()
+                    .Include(cl => cl.EducationLevel)
+                    .Include(cl => cl.CompetitionYear)
+                    .ThenInclude(cy => cy!.Competition)
+                    .FirstOrDefaultAsync(cl => cl.CompetitionLevelID == levelId);
+
+                if (level == null)
+                {
+                    response.IsSuccess = false;
+                    response.StatusCode = HttpStatusCode.NotFound;
+                    response.ErrorMessages.Add("ไม่พบระดับชั้นการแข่งขันที่ระบุ");
+                    return HandleResponse(response);
+                }
+
+                var compName = level.CompetitionYear?.Competition?.CompetitionName ?? "";
+                var eduName = level.EducationLevel?.LevelName ?? "";
+                var levelName = $"{compName} ({eduName})".Trim();
+
+                var teams = await _context.Teams
+                    .AsNoTracking()
+                    .Include(t => t.schools)
+                    .Include(t => t.Students)
+                    .Include(t => t.Advisors)
+                    .Where(t => t.CompetitionLevelID == levelId && (t.Status == SD.TeamStatus.Verified || t.Status == SD.TeamStatus.CheckedIn || t.Status == SD.TeamStatus.Registered))
+                    .OrderBy(t => t.schools != null ? t.schools.school_name : string.Empty)
+                    .ThenBy(t => t.TeamID)
+                    .ToListAsync();
+
+                var result = new List<CompetitorAnnouncementDto>();
+
+                foreach (var t in teams)
+                {
+                    var dto = new CompetitorAnnouncementDto
+                    {
+                        TeamID = t.TeamID,
+                        SchoolName = t.schools != null ? t.schools.school_name : "ไม่ระบุสถานศึกษา",
+                        CompetitionLevelName = levelName,
+                        Remarks = t.Status == SD.TeamStatus.CheckedIn ? "ลงทะเบียนเข้างานแล้ว" : "ผ่านการตรวจสอบ (มีสิทธิ์แข่งขัน)",
+                    };
+
+                    if (t.Students != null && t.Students.Any())
+                    {
+                        dto.CompetitorNames = t.Students
+                            .OrderByDescending(s => s.IsMainMember)
+                            .ThenBy(s => s.StudentID)
+                            .Select(s => $"{s.TitlePrefix} {s.FirstName} {s.LastName}".Trim())
+                            .ToList();
+                    }
+
+                    var advisors = new List<string>();
+
+                    if (!string.IsNullOrWhiteSpace(t.PrimaryFirstName))
+                    {
+                        advisors.Add($"{t.PrimaryTitlePrefix} {t.PrimaryFirstName} {t.PrimaryLastName}".Trim());
+                    }
+                    if (!string.IsNullOrWhiteSpace(t.SecondaryFirstName))
+                    {
+                        advisors.Add($"{t.SecondaryTitlePrefix} {t.SecondaryFirstName} {t.SecondaryLastName}".Trim());
+                    }
+                    if (!string.IsNullOrWhiteSpace(t.ThirdFirstName))
+                    {
+                        advisors.Add($"{t.ThirdTitlePrefix} {t.ThirdFirstName} {t.ThirdLastName}".Trim());
+                    }
+                    if (!string.IsNullOrWhiteSpace(t.FourthFirstName))
+                    {
+                        advisors.Add($"{t.FourthTitlePrefix} {t.FourthFirstName} {t.FourthLastName}".Trim());
+                    }
+                    if (!string.IsNullOrWhiteSpace(t.FifthFirstName))
+                    {
+                        advisors.Add($"{t.FifthTitlePrefix} {t.FifthFirstName} {t.FifthLastName}".Trim());
+                    }
+
+                    if (t.Advisors != null && t.Advisors.Any())
+                    {
+                        foreach (var adv in t.Advisors)
+                        {
+                            var advName = $"{adv.TitlePrefix} {adv.FirstName} {adv.LastName}".Trim();
+                            if (!string.IsNullOrWhiteSpace(advName) && !advisors.Contains(advName))
+                            {
+                                advisors.Add(advName);
+                            }
+                        }
+                    }
+
+                    dto.AdvisorNames = advisors;
+                    result.Add(dto);
+                }
 
                 response.StatusCode = HttpStatusCode.OK;
                 response.Result = result;

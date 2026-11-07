@@ -1,4 +1,4 @@
-using ProjectScientDay2568.Models.YourNamespace.Models;
+﻿using ProjectScientDay2568.Models.YourNamespace.Models;
 
 namespace ProjectScientDay2568.Data
 {
@@ -19,6 +19,7 @@ namespace ProjectScientDay2568.Data
         public DbSet<Team> Teams { get; set; }
         public DbSet<Student> Students { get; set; }
         public DbSet<Match> Matches { get; set; }
+        public DbSet<MatchDrawLog> MatchDrawLogs { get; set; }
         public DbSet<TeamCertificate> TeamCertificates { get; set; }
         public DbSet<CertificateConfig> CertificateConfigs { get; set; }
         public DbSet<Schools> School { get; set; }
@@ -26,12 +27,11 @@ namespace ProjectScientDay2568.Data
         public DbSet<TeamProject> TeamProjects { get; set; }
         public DbSet<SystemSetting> SystemSettings { get; set; }
         public DbSet<HomeBanner> HomeBanners { get; set; }
+        public DbSet<AuditLog> AuditLogs { get; set; }
         public DbSet<TeamAdvisor> TeamAdvisors { get; set; }
         public DbSet<Branch> Branches { get; set; }
         public DbSet<Trainingtopic> Trainingtopics { get; set; }
         public DbSet<TrainingRegistration> TrainingRegistrations { get; set; }
-
-
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
@@ -41,16 +41,12 @@ namespace ProjectScientDay2568.Data
             }
 
             //base.OnConfiguring(optionsBuilder);
-            //optionsBuilder.UseSqlServer("Server=DESKTOP-FUBH5IH\\SQLEXPRESS;Database=ProjectScientDaySS;TrustServerCertificate=True;Trusted_Connection=True;");
+            //optionsBuilder.UseSqlServer("Server=DESKTOP-FUBH5IH\\SQLEXPRESS;Database=ProjectScientDay;TrustServerCertificate=True;Trusted_Connection=True;");
 
-            //บนเซิร์ฟเวอร์
-            optionsBuilder.UseSqlServer("Server=10.103.0.15,1433;Database=ProjectScientDay; Trusted_Connection = false; MultipleActiveResultSets = true; " +
-                "TrustServerCertificate = True; User Id = student;Password = Com@2022; Encrypt = false; ");
+            base.OnConfiguring(optionsBuilder);
+            optionsBuilder.UseSqlServer("Server=10.103.0.15,1433;Database=ProjectScientDay; Trusted_Connection = false; MultipleActiveResultSets = true; TrustServerCertificate = True; User Id = student;Password = Com@2022; Encrypt = false; ");
 
-            //base.OnConfiguring(optionsBuilder);
-            //optionsBuilder.UseSqlServer("Server=10.103.0.17,1433;Database=ProjectScientDay; Trusted_Connection = false; MultipleActiveResultSets = true; TrustServerCertificate = True; User Id = student;Password = Pass@sql; Encrypt = false; ");
-
-        }
+        }   
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -70,7 +66,5 @@ namespace ProjectScientDay2568.Data
 
             base.OnModelCreating(builder);
         }
-
-
     }
 }

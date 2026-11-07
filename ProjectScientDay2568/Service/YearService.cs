@@ -159,58 +159,63 @@ namespace ProjectScientDay2568.Service
                 ?? throw new InvalidOperationException("ยังไม่ได้ตั้งค่าเกียรติบัตรสำหรับปีนี้");
 
             var name = (config.CertificateName ?? string.Empty).Trim();
+            var yearNumber = await _context.Years.Where(y => y.YearID == year).Select(y => y.YearNumber).SingleAsync(ct);
 
-            await using var tx = await _context.Database.BeginTransactionAsync(ct);
+            // กันกดพร้อมกันแล้วได้เลขซ้ำ
+            await using var tx = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
 
-            var runningNumber = config.StartNumber;
-
-            var teamIdsInYear = await _context.Teams
-                .Where(t => t.CompetitionLevel.CompetitionYear.Year.YearID == year)
-                .Select(t => t.TeamID)
-                .ToListAsync(ct);
-
-            var existingCertificates = await _context.TeamCertificates
-                .Where(tc => teamIdsInYear.Contains(tc.TeamID))
-                .ToListAsync(ct);
-
-            if (existingCertificates.Count > 0)
-            {
-                _context.TeamCertificates.RemoveRange(existingCertificates);
-                await _context.SaveChangesAsync(ct);
-            }
-
+            // ทุกทีมที่เข้าร่วม (เช็คอินแล้ว) ในปีนี้ ทุกกิจกรรม ทุกระดับ
+            // เรียงตามกิจกรรม → ระดับชั้น → รหัสทีม (ไม่สนรางวัล) ลำดับคงที่ทุกครั้ง
             var teams = await _context.Teams
                 .Where(t => t.Status == TeamStatus.CheckedIn &&
-                            t.CompetitionLevel.CompetitionYear.Year.YearID == year)
-                .OrderBy(t => t.RewardTypeID)
-                .Include(t => t.CompetitionLevel)
-                    .ThenInclude(cl => cl.CompetitionYear)
-                        .ThenInclude(cy => cy.Year)
+                            t.CompetitionLevel!.CompetitionYear.Year.YearID == year)
+                .OrderBy(t => t.CompetitionLevel!.CompetitionYearID)
+                .ThenBy(t => t.CompetitionLevelID)
+                .ThenBy(t => t.TeamID)
+                .Select(t => new { t.TeamID, t.CompetitionLevelID })
                 .ToListAsync(ct);
 
-            var certificates = new List<TeamCertificate>(teams.Count);
-            foreach (var team in teams)
+            // เลขที่ออกไปแล้วทั้งปี (รวมทีมที่ภายหลังถูกเปลี่ยนสถานะ) ห้ามลบ/ห้ามเปลี่ยน เพราะอาจพิมพ์ไปแล้ว
+            var existing = await _context.TeamCertificates
+                .Where(tc => tc.Team.CompetitionLevel!.CompetitionYear.Year.YearID == year)
+                .ToListAsync(ct);
+            var certByTeam = existing
+                .GroupBy(c => c.TeamID)
+                .ToDictionary(g => g.Key, g => g.OrderBy(c => c.CertificateID).First());
+
+            int? Running(string? no)
             {
-                var yearNumber = team.CompetitionLevel.CompetitionYear.Year.YearNumber;
-                certificates.Add(new TeamCertificate
-                {
-                    TeamID = team.TeamID,
-                    CertificateNumber = $"{runningNumber}/{yearNumber}",
-                    CertificateName = name,
-                    IssuedDate = DateTime.UtcNow
-                });
-                runningNumber++;
+                if (string.IsNullOrWhiteSpace(no)) return null;
+                var slash = no.IndexOf('/');
+                return slash > 0 && int.TryParse(no[..slash], out var n) ? n : null;
             }
 
-            if (certificates.Count > 0)
-                await _context.TeamCertificates.AddRangeAsync(certificates, ct);
+            // เลขถัดไป = max(StartNumber, เลขสูงสุดที่ออกแล้ว + 1) ไม่แก้ config.StartNumber ในฐานข้อมูล
+            var runningNumber = Math.Max(config.StartNumber, (existing.Select(c => Running(c.CertificateNumber)).Max() ?? 0) + 1);
 
-            // ไม่แก้ไขค่า config.StartNumber เพื่อคงค่าเริ่มต้นที่ผู้ใช้ตั้งไว้ (เช่น 50)
+            foreach (var team in teams.Where(t => !certByTeam.ContainsKey(t.TeamID)))
+            {
+                var cert = new TeamCertificate
+                {
+                    TeamID = team.TeamID,
+                    CertificateNumber = $"{runningNumber++}/{yearNumber}",
+                    CertificateName = name,
+                    IssuedDate = DateTime.UtcNow
+                };
+                _context.TeamCertificates.Add(cert);
+                certByTeam[team.TeamID] = cert;
+            }
+
+            // ทำเครื่องหมายว่าระดับที่มีทีมเข้าร่วมออกเลขแล้ว
+            var levelIds = teams.Select(t => t.CompetitionLevelID).Distinct().ToList();
+            var levels = await _context.CompetitionLevels.Where(l => levelIds.Contains(l.CompetitionLevelID)).ToListAsync(ct);
+            levels.ForEach(l => l.IsCertificateNumberGenerated = true);
+
             await _context.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
-            return _mapper.Map<List<TeamCertificateDto>>(certificates);
-        }  
+            return _mapper.Map<List<TeamCertificateDto>>(teams.Select(t => certByTeam[t.TeamID]).ToList());
+        }
         public async Task<YearDto> CloneYearAsync(CloneYearRequest req, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(req.NewYearName))

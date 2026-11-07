@@ -39,6 +39,10 @@ namespace ProjectScientDay2568.Models
 
         public string? Trainingtopicsrequirements { get; set; }
 
+        // ผู้เข้าร่วมกิจกรรม เช่น "นักเรียนชั้นมัธยมศึกษาปีที่ 4-6"
+        [MaxLength(500)]
+        public string? Audience { get; set; }
+
         public int? Branch_id { get; set; }
 
         [ForeignKey("Branch_id")]
@@ -48,6 +52,29 @@ namespace ProjectScientDay2568.Models
 
         [ForeignKey("CertificateTemplateId")]
         public CertificateConfig? CertificateTemplate { get; set; }
+
+        // ปีการจัดงาน (ตาราง Years เดียวกับการแข่งขัน)
+        public int? YearID { get; set; }
+
+        [ForeignKey("YearID")]
+        public Year? Year { get; set; }
+
+        // กลุ่มไลน์ของหลักสูตร (ไม่บังคับ) ส่งให้เฉพาะผู้ที่สมัครแล้วและเจ้าหน้าที่
+        [MaxLength(500)] public string? LineGroupUrl { get; set; }
+        [MaxLength(500)] public string? LineQrPath { get; set; }
+        [MaxLength(500)] public string? LineNote { get; set; }
+
+        [NotMapped]
+        public bool HasLineGroup { get; set; }
+
+        // ใช้กับ entity ที่ไม่ได้บันทึกต่อเท่านั้น (ก่อนตอบกลับ)
+        public void HideLineGroup()
+        {
+            HasLineGroup = !string.IsNullOrEmpty(LineGroupUrl) || !string.IsNullOrEmpty(LineQrPath);
+            LineGroupUrl = null;
+            LineQrPath = null;
+            LineNote = null;
+        }
 
         [NotMapped]
         public int RegisteredCount { get; set; }

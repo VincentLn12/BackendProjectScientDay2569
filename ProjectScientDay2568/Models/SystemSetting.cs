@@ -47,5 +47,16 @@ namespace ProjectScientDay2568.Models
         [MaxLength(1000)] public string? HomeNewsDescription { get; set; }
         [MaxLength(100)] public string? HomeNewsButtonLabel { get; set; }
         public int? HomeDisplayYearId { get; set; }
+
+        // คู่มือแอดมิน: ไฟล์อยู่ใน wwwroot/uploads/settings (เปิดได้จากลิงก์ไฟล์โดยตรง)
+        [MaxLength(500)] public string? AdminManualPath { get; set; }
+        [MaxLength(255)] public string? AdminManualFileName { get; set; }
+        public DateTime? AdminManualUpdatedAt { get; set; }
+
+        // คู่มือผู้ใช้ (สาธารณะ): ไฟล์อยู่ใน wwwroot/uploads/settings แสดงบนแถบเมนู ท้ายเว็บ และหน้าเลือกปี
+        [MaxLength(500)] public string? UserManualPath { get; set; }
+        [MaxLength(255)] public string? UserManualFileName { get; set; }
+        public DateTime? UserManualUpdatedAt { get; set; }
+
     }
 }

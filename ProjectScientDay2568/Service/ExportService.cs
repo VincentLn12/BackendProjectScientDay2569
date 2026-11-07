@@ -422,6 +422,14 @@ namespace ProjectScientDay2568.Service
             if (student == null)
                 throw new KeyNotFoundException($"Student with ID {studentId} not found in the team.");
 
+            // ผู้สมัครแบบเดี่ยวถูกบันทึกเป็นทีมที่มีสมาชิกหนึ่งคน จึงใช้เลขรัน
+            // ของ TeamCertificate เดียวกับที่สร้างเมื่อปิดกิจกรรม
+            var certificateNo = await _context.TeamCertificates
+                .Where(c => c.TeamID == teamId && !string.IsNullOrWhiteSpace(c.CertificateNumber))
+                .OrderBy(c => c.CertificateID)
+                .Select(c => c.CertificateNumber!.Trim())
+                .FirstOrDefaultAsync();
+
             QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 
             EnsureFontRegistered();
@@ -486,6 +494,15 @@ namespace ProjectScientDay2568.Service
 
                     if (backgroundImage != null)
                         page.Background().Image(backgroundImage, ImageScaling.FitArea);
+
+                    if (!string.IsNullOrWhiteSpace(certificateNo))
+                    {
+                        page.Foreground().Element(c =>
+                            c.AlignTop().AlignRight().PaddingRight(70).PaddingTop(60)
+                             .Text($"เลขที่ {certificateNo}")
+                             .FontSize(16).LineHeight(1.0f)
+                        );
+                    }
 
                     page.Content().PaddingHorizontal(60).PaddingTop(62).AlignTop().AlignCenter().Column(column =>
                     {
@@ -565,6 +582,256 @@ namespace ProjectScientDay2568.Service
                 return File.Exists(uploads) ? await File.ReadAllBytesAsync(uploads) : null;
             }
         }
+        // ===== เกียรติบัตรผู้เข้าอบรม: ใช้พื้นหลัง/โลโก้/ลายเซ็นจากการตั้งค่าเกียรติบัตรของปี (CertificateConfig) =====
+
+        // เกียรติบัตร 1 ใบ; ownerUserId != null → ต้องเป็นการสมัครของผู้ใช้คนนั้น
+        public async Task<byte[]> GenerateTrainingCertificateAsync(int registrationId, string? ownerUserId)
+        {
+            var reg = await _context.TrainingRegistrations.AsNoTracking()
+                .Include(r => r.Trainingtopic)
+                .FirstOrDefaultAsync(r => r.Id == registrationId)
+                ?? throw new KeyNotFoundException("ไม่พบข้อมูลการสมัคร");
+
+            if (ownerUserId != null && reg.UserId != ownerUserId)
+                throw new UnauthorizedAccessException("ไม่มีสิทธิ์ดาวน์โหลดเกียรติบัตรนี้");
+            if (reg.Status == "ยกเลิกแล้ว")
+                throw new InvalidOperationException("การสมัครนี้ถูกยกเลิกแล้ว จึงไม่มีเกียรติบัตร");
+
+            return await BuildTrainingCertificatesAsync(reg.Trainingtopic!, new List<string> { TrainingFullName(reg) });
+        }
+
+        // เกียรติบัตรทุกคนในหลักสูตร ไฟล์เดียว คนละหน้า (ไม่รวมผู้ที่ยกเลิก)
+        public async Task<byte[]> GenerateTrainingCertificatesForTopicAsync(int trainingtopicId)
+        {
+            var topic = await _context.Trainingtopics.AsNoTracking().FirstOrDefaultAsync(t => t.Id == trainingtopicId)
+                ?? throw new KeyNotFoundException("ไม่พบหลักสูตรอบรม");
+
+            var regs = await _context.TrainingRegistrations.AsNoTracking()
+                .Where(r => r.TrainingtopicId == trainingtopicId && r.Status != "ยกเลิกแล้ว")
+                .OrderBy(r => r.RegisteredAt)
+                .ToListAsync();
+            if (regs.Count == 0)
+                throw new KeyNotFoundException("ยังไม่มีผู้ลงทะเบียนในหลักสูตรนี้");
+
+            return await BuildTrainingCertificatesAsync(topic, regs.Select(TrainingFullName).ToList());
+        }
+
+        private static string TrainingFullName(TrainingRegistration r) =>
+            System.Text.RegularExpressions.Regex.Replace($"{r.Prefix}{r.FirstName} {r.LastName}".Replace('\u00A0', ' '), @"\s+", " ").Trim();
+
+        private async Task<byte[]> BuildTrainingCertificatesAsync(Trainingtopic topic, List<string> names)
+        {
+            if (topic.YearID is not int yearId)
+                throw new InvalidOperationException("หลักสูตรนี้ยังไม่ได้ระบุปีการจัดงาน กรุณาแก้ไขหลักสูตรแล้วเลือกปี");
+
+            var year = await _context.Years.AsNoTracking().FirstOrDefaultAsync(y => y.YearID == yearId)
+                ?? throw new KeyNotFoundException("ไม่พบปีการจัดงานของหลักสูตรนี้");
+            var config = await _configService.GetCertificateConfigAsync(yearId);
+
+            var background = await _configService.GetCertificateBackgroundBytesAsync(yearId)
+                ?? await LoadWebImageAsync("certificate-bg.png");
+            var leftSignature = await MakeSignatureTransparentAsync(await LoadWebImageAsync(config?.UniversityDeanSignature));
+            var rightSignature = await MakeSignatureTransparentAsync(await LoadWebImageAsync(config?.FacultyDeanSignature));
+            var uniLogo = await LoadWebImageAsync(config?.UniversityLogoPath);
+            var instLogo = await LoadWebImageAsync(config?.InstituteLogoPath);
+
+            static string NoWrap(string? v) => string.IsNullOrWhiteSpace(v) ? " " : System.Text.RegularExpressions.Regex.Replace(v.Trim(), @"\s+", "\u00A0");
+            var leftName = NoWrap(config?.UniversityDeanName);
+            var rightName = NoWrap(config?.FacultyDeanName);
+            var leftRole = string.IsNullOrWhiteSpace(config?.UniversityDeanTitle) ? "อธิการบดีมหาวิทยาลัย" : config!.UniversityDeanTitle!;
+            var rightRole = string.IsNullOrWhiteSpace(config?.FacultyDeanTitle) ? "คณบดีคณะวิทยาศาสตร์และเทคโนโลยี" : config!.FacultyDeanTitle!;
+            var trainingName = topic.Name.Trim();
+
+            EnsureFontRegistered();
+            QuestPDF.Settings.License = LicenseType.Community;
+
+            return QuestPDF.Fluent.Document.Create(container =>
+            {
+                foreach (var name in names)
+                {
+                    container.Page(page =>
+                    {
+                        page.Size(PageSizes.A4.Landscape());
+                        page.Margin(0);
+                        page.DefaultTextStyle(x => x.FontFamily("TH Sarabun New").FontSize(22).LineHeight(1.05f));
+
+                        if (background != null)
+                            page.Background().Image(background, ImageScaling.FitArea);
+
+                        page.Content().PaddingHorizontal(60).PaddingTop(62).AlignTop().AlignCenter().Column(column =>
+                        {
+                            column.Spacing(2);
+
+                            column.Item().AlignCenter().Row(row =>
+                            {
+                                row.Spacing(16);
+                                row.AutoItem().Width(80).Height(80).AlignCenter().AlignMiddle().Padding(2).Element(e =>
+                                {
+                                    if (uniLogo != null) e.Image(uniLogo, ImageScaling.FitArea); else e.Text(" ");
+                                });
+                                row.AutoItem().Width(80).Height(80).AlignCenter().AlignMiddle().Padding(2).Element(e =>
+                                {
+                                    if (instLogo != null) e.Image(instLogo, ImageScaling.FitArea); else e.Text(" ");
+                                });
+                            });
+
+                            column.Item().Height(5);
+                            column.Item().AlignCenter().Text("เกียรติบัตรฉบับนี้ให้ไว้เพื่อแสดงว่า").FontSize(30).SemiBold().LineHeight(1.0f);
+                            column.Item().Height(5);
+                            column.Item().AlignCenter().Text(name).FontSize(30).Bold().FontColor("#1D4ED8").LineHeight(1.2f);
+                            column.Item().AlignCenter().Text("ได้ผ่านการอบรม").FontSize(24).SemiBold().LineHeight(1.1f);
+                            column.Item().AlignCenter().Text(trainingName).FontSize(26).Bold().FontColor("#B91C1C").LineHeight(1.1f);
+
+                            column.Item().Height(5);
+                            column.Item().AlignCenter().Text($"งานสัปดาห์วิทยาศาสตร์แห่งชาติ (ส่วนภูมิภาค) ประจำปี {year.YearNumber}").FontSize(26).SemiBold().LineHeight(1.5f);
+                            if (!string.IsNullOrWhiteSpace(year.DateName))
+                                column.Item().AlignCenter().Text($"ระหว่างวันที่ {year.DateName} {year.YearNumber} ณ มหาวิทยาลัยราชภัฏกาญจนบุรี").FontSize(26).SemiBold().LineHeight(1.0f);
+                            column.Item().AlignCenter().Text("ขออวยพรให้ประสบความสุข ความเจริญก้าวหน้าตลอดไป").FontSize(24).SemiBold().LineHeight(1.5f);
+                            column.Item().Height(20);
+
+                            column.Item().AlignCenter().Width(700).PaddingHorizontal(12).Table(table =>
+                            {
+                                table.ColumnsDefinition(columns => { columns.RelativeColumn(1); columns.RelativeColumn(1); });
+                                table.Cell().Row(1).Column(1).AlignCenter().Width(100).Height(36).AlignBottom().Element(e => { if (leftSignature != null) e.Image(leftSignature, ImageScaling.FitArea); else e.Text(" "); });
+                                table.Cell().Row(1).Column(2).AlignCenter().Width(100).Height(36).AlignBottom().Element(e => { if (rightSignature != null) e.Image(rightSignature, ImageScaling.FitArea); else e.Text(" "); });
+                                table.Cell().Row(2).Column(1).AlignCenter().Text(leftName).FontSize(18).Bold().LineHeight(1.0f);
+                                table.Cell().Row(2).Column(2).AlignCenter().Text(rightName).FontSize(18).Bold().LineHeight(1.0f);
+                                table.Cell().Row(3).Column(1).AlignCenter().Text(leftRole).FontSize(17).LineHeight(1.0f);
+                                table.Cell().Row(3).Column(2).AlignCenter().Text(rightRole).FontSize(17).LineHeight(1.0f);
+                            });
+                        });
+                    });
+                }
+            }).GeneratePdf();
+        }
+
+        // รูปใน wwwroot (หรือ wwwroot/uploads) / URL
+        private async Task<byte[]?> LoadWebImageAsync(string? pathOrUrl)
+        {
+            if (string.IsNullOrWhiteSpace(pathOrUrl)) return null;
+            if (pathOrUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            {
+                try { using var http = new HttpClient(); return await http.GetByteArrayAsync(pathOrUrl); }
+                catch { return null; }
+            }
+
+            var webRoot = _env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+            var normalized = pathOrUrl.TrimStart('~').TrimStart('/');
+            var full = Path.Combine(webRoot, normalized);
+            if (File.Exists(full)) return await File.ReadAllBytesAsync(full);
+            var uploads = Path.Combine(webRoot, "uploads", normalized);
+            return File.Exists(uploads) ? await File.ReadAllBytesAsync(uploads) : null;
+        }
+
+        // ใบลงชื่อผู้เข้าอบรม: หัวเป็นชื่อหลักสูตร ตาราง ลำดับ / ชื่อ-นามสกุล / ลายมือชื่อ (เฉพาะคนที่ยังไม่ยกเลิก)
+        public async Task<byte[]> GenerateTrainingSignInSheetAsync(int trainingtopicId)
+        {
+            var topic = await _context.Trainingtopics.AsNoTracking().FirstOrDefaultAsync(t => t.Id == trainingtopicId)
+                ?? throw new KeyNotFoundException("ไม่พบหลักสูตรอบรม");
+
+            var names = await LoadSignInNamesAsync(new[] { trainingtopicId });
+            if (!names.TryGetValue(trainingtopicId, out var people))
+                throw new KeyNotFoundException("ยังไม่มีผู้ลงทะเบียนในหลักสูตรนี้");
+
+            return BuildSignInPdf(new[] { (topic.Name, people) });
+        }
+
+        // ใบลงชื่อทุกหลักสูตรของปี ไฟล์เดียว แต่ละหลักสูตรขึ้นหน้าใหม่ (ข้ามหลักสูตรที่ไม่มีผู้ลงทะเบียน)
+        public async Task<byte[]> GenerateTrainingSignInSheetsByYearAsync(int yearId)
+        {
+            var topics = await _context.Trainingtopics.AsNoTracking()
+                .Where(t => t.YearID == yearId)
+                .OrderBy(t => t.TrainingDate).ThenBy(t => t.Name)
+                .Select(t => new { t.Id, t.Name })
+                .ToListAsync();
+
+            var names = await LoadSignInNamesAsync(topics.Select(t => t.Id).ToList());
+            var sheets = topics
+                .Where(t => names.ContainsKey(t.Id))
+                .Select(t => (t.Name, names[t.Id]))
+                .ToList();
+
+            if (sheets.Count == 0)
+                throw new KeyNotFoundException("ยังไม่มีผู้ลงทะเบียนในหลักสูตรของปีนี้");
+
+            return BuildSignInPdf(sheets);
+        }
+
+        private async Task<Dictionary<int, List<string>>> LoadSignInNamesAsync(ICollection<int> topicIds)
+        {
+            var rows = await _context.TrainingRegistrations.AsNoTracking()
+                .Where(r => topicIds.Contains(r.TrainingtopicId) && r.Status != "ยกเลิกแล้ว")
+                .OrderBy(r => r.RegisteredAt)
+                .Select(r => new { r.TrainingtopicId, r.Prefix, r.FirstName, r.LastName })
+                .ToListAsync();
+
+            return rows
+                .GroupBy(r => r.TrainingtopicId)
+                .ToDictionary(g => g.Key, g => g.Select(p => $"{p.Prefix}{p.FirstName} {p.LastName}".Trim()).ToList());
+        }
+
+        private byte[] BuildSignInPdf(IEnumerable<(string Title, List<string> People)> sheets)
+        {
+            EnsureFontRegistered();
+            QuestPDF.Settings.License = LicenseType.Community;
+
+            return QuestPDF.Fluent.Document.Create(container =>
+            {
+                // หนึ่งหลักสูตร = หนึ่ง page set → ขึ้นหน้าใหม่เสมอ เลขหน้านับแยกต่อหลักสูตร
+                foreach (var (title, people) in sheets)
+                {
+                    container.Page(page =>
+                    {
+                        page.Size(PageSizes.A4);
+                        page.Margin(30);
+                        page.DefaultTextStyle(x => x.FontSize(16).FontFamily("TH Sarabun New"));
+
+                        page.Header().PaddingBottom(10).AlignCenter().Text(title).FontSize(20).Bold();
+
+                        page.Content().Table(table =>
+                        {
+                            table.ColumnsDefinition(columns =>
+                            {
+                                columns.ConstantColumn(50);  // ลำดับ
+                                columns.RelativeColumn(3);   // ชื่อ-นามสกุล
+                                columns.RelativeColumn(2);   // ลายมือชื่อ
+                            });
+
+                            table.Header(header =>
+                            {
+                                header.Cell().Element(Head).Text("ลำดับ").Bold();
+                                header.Cell().Element(Head).Text("ชื่อ-นามสกุล").Bold();
+                                header.Cell().Element(Head).Text("ลายมือชื่อ").Bold();
+                            });
+
+                            var no = 1;
+                            foreach (var name in people)
+                            {
+                                table.Cell().Element(Cell).AlignCenter().Text((no++).ToString());
+                                table.Cell().Element(Cell).Text(name);
+                                table.Cell().Element(Cell).Text("");
+                            }
+                        });
+
+                        page.Footer().AlignRight().Text(x =>
+                        {
+                            x.Span("หน้า ");
+                            x.CurrentPageNumber();
+                            x.Span(" / ");
+                            x.TotalPages();
+                        });
+                    });
+                }
+            }).GeneratePdf();
+
+            static IContainer Head(IContainer c) =>
+                c.Border(1).Background("#F1F5F9").PaddingVertical(6).AlignCenter().AlignMiddle();
+
+            // แถวสูงพอให้เซ็นชื่อได้
+            static IContainer Cell(IContainer c) =>
+                c.Border(1).MinHeight(34).PaddingHorizontal(6).AlignMiddle();
+        }
+
         public async Task<byte[]> GenerateTeamReportTableAsync(int competitionLevelID)
         {
             var query = _context.Teams
@@ -618,10 +885,9 @@ namespace ProjectScientDay2568.Service
                         {
                             columns.RelativeColumn(1); // ลำดับ
                             columns.RelativeColumn(3); // โรงเรียน
-                            if (includeProjectColumn)
-                                columns.RelativeColumn(3); // ชื่อโครงงาน
                             columns.RelativeColumn(3); // ผู้สมัครแข่งขัน
-                            columns.RelativeColumn(2); // ครูผู้ควบคุม
+                            columns.RelativeColumn(3); // ครูผู้ควบคุม
+                            // ชื่อโครงงานอยู่แถวของตัวเองใต้ทีม (กว้างเต็ม 3 คอลัมน์) ไม่บีบคอลัมน์อื่น
                             //columns.RelativeColumn(1); // หมายเหตุ
                         });
 
@@ -630,8 +896,6 @@ namespace ProjectScientDay2568.Service
                         {
                             header.Cell().Element(HeaderCellStyle).Text("ลำดับ").SemiBold().AlignCenter();
                             header.Cell().Element(HeaderCellStyle).Text("โรงเรียน").SemiBold().AlignCenter();
-                            if (includeProjectColumn)
-                                header.Cell().Element(HeaderCellStyle).Text("ชื่อโครงงาน").SemiBold().AlignCenter();
                             header.Cell().Element(HeaderCellStyle).Text("ผู้สมัครแข่งขัน").SemiBold().AlignCenter();
                             header.Cell().Element(HeaderCellStyle).Text("ครูผู้ควบคุม").SemiBold().AlignCenter();
                             //header.Cell().Element(HeaderCellStyle).Text("หมายเหตุ").SemiBold().AlignCenter();
@@ -646,7 +910,9 @@ namespace ProjectScientDay2568.Service
                                 : Regex.Replace(team.schools.school_name, @"\s*[\d๐-๙]+$", "");
 
                             var studentList = string.Join("\n",
-                                team.Students.Select((s, i) =>
+                                team.Students
+                                  .Where(s => HasExportableStudentName(s.FirstName, s.LastName))
+                                  .Select((s, i) =>
                                   $"{i + 1}. {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}"
                                   ));
 
@@ -660,15 +926,21 @@ namespace ProjectScientDay2568.Service
                                         .Select((t, i) => $"{i + 1}. {t}"));
 
                             // ==== แถวข้อมูล ====
-                            table.Cell().Element(CellStyle).Text((index++).ToString()); // ลำดับ
+                            var project = includeProjectColumn ? team.ProjectName?.Trim() : null;
+                            var hasProject = !string.IsNullOrEmpty(project);
+                            table.Cell().RowSpan(hasProject ? 2u : 1u).Element(CellStyle).AlignCenter().Text((index++).ToString()); // ลำดับ
                             table.Cell().Element(CellStyle).Text(teamName);             // โรงเรียน
-                            if (includeProjectColumn)
-                            {
-                                var project = string.IsNullOrWhiteSpace(team.ProjectName) ? "" : team.ProjectName;
-                                table.Cell().Element(CellStyle).Text(project);          // ชื่อโครงงาน
-                            }
                             table.Cell().Element(CellStyle).Text(studentList);          // ผู้สมัครแข่งขัน
                             table.Cell().Element(CellStyle).Text(string.IsNullOrWhiteSpace(advisorList) ? "—" : advisorList); // ครูผู้ควบคุม
+                            if (hasProject)
+                            {
+                                // แถวชื่อโครงงาน: กว้างเต็ม (โรงเรียน → ครูผู้ควบคุม)
+                                table.Cell().ColumnSpan(3).Element(ProjectCellStyle).Text(t =>
+                                {
+                                    t.Span("ชื่อโครงงาน: ").SemiBold();
+                                    t.Span(project);
+                                });
+                            }
                                                                                                                               // table.Cell().Element(CellStyle).Text("");                 // หมายเหตุ (ถ้าจะใช้)
                         }
                     });
@@ -691,6 +963,9 @@ namespace ProjectScientDay2568.Service
 
             IContainer HeaderCellStyle(IContainer c) =>
                 c.Border(1).Padding(6);
+
+            IContainer ProjectCellStyle(IContainer c) =>
+                c.Border(1).Background("#F3F4F6").PaddingVertical(4).PaddingHorizontal(5).AlignLeft();
         }
         public async Task<byte[]> GenerateTeamReportWordTeamAsync(int competitionLevelID)
         {
@@ -753,6 +1028,7 @@ namespace ProjectScientDay2568.Service
                     )
                 );
                 table.AppendChild(tblProps);
+                table.AppendChild(CreateTableGrid("800", "2000", "3000", "3000", "1200"));
 
                 // ----- แถวหัวตาราง -----
                 var headerRow = new TableRow();
@@ -761,9 +1037,6 @@ namespace ProjectScientDay2568.Service
                     CreateHeaderCell("ลำดับ", "800"),
                     CreateHeaderCell("โรงเรียน", "2000")
                 );
-
-                if (includeProjectColumn)
-                    headerRow.Append(CreateHeaderCell("ชื่อโครงงาน", "3000"));
 
                 headerRow.Append(
                     CreateHeaderCell("ผู้สมัครแข่งขัน", "3000"),
@@ -779,22 +1052,27 @@ namespace ProjectScientDay2568.Service
                 {
 
                     var schoolNameRaw = string.IsNullOrWhiteSpace(team.schools.school_name) ? "—" : team.schools.school_name;
-                    var schoolName = Regex.Replace(schoolNameRaw, @"\s*[\d๐-๙]+$", ""); // ลบเลขท้าย (อารบิก/ไทย) ถ้ามี
+                    // The trailing 3 is part of this school's official branch name.
+                    var schoolName = schoolNameRaw == "โรงเรียนบรรหารแจ่มใสวิทยา 3"
+                        ? schoolNameRaw
+                        : Regex.Replace(schoolNameRaw, @"\s*[\d๐-๙]+$", "");
 
-                    var studentList = team.Students.Select((s, i) => $"{i + 1}. {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}");
+                    var studentList = team.Students
+                        .Where(s => HasExportableStudentName(s.FirstName, s.LastName))
+                        .Select((s, i) => $"{i + 1}. {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}");
                     var advisorLines = new List<string?>();
                     advisorLines.Add(FormatPerson(team.PrimaryTitlePrefix, team.PrimaryFirstName, team.PrimaryLastName));
                     advisorLines.Add(FormatPerson(team.SecondaryTitlePrefix, team.SecondaryFirstName, team.SecondaryLastName));
 
 
+                    var project = includeProjectColumn ? team.ProjectName?.Trim() : null;
+                    var hasProject = !string.IsNullOrEmpty(project);
+
                     var row = new TableRow();
                     row.Append(
-                        CreateTableCell(index++.ToString(), "800"),
+                        MergeDown(CreateTableCell(index++.ToString(), "800"), hasProject, restart: true),
                         CreateTableCell(schoolName, "2000")
                     );
-
-                    if (includeProjectColumn)
-                        row.Append(CreateTableCell(string.IsNullOrWhiteSpace(team.ProjectName) ? "" : team.ProjectName, "3000"));
 
                     row.Append(
                         CreateParagraphCell(studentList, "3000"),
@@ -803,6 +1081,8 @@ namespace ProjectScientDay2568.Service
                     );
 
                     table.Append(row);
+                    if (hasProject)
+                        table.Append(CreateProjectRow(project!, "800", "9200", 4));
                 }
 
                 body.Append(table);
@@ -813,16 +1093,51 @@ namespace ProjectScientDay2568.Service
         }
         public async Task<byte[]> GenerateWinnersFormAsync(int competitionLevelID, CancellationToken ct = default)
         {
-            // 1) ดึงทีมที่มี RewardTypeID (ถือว่า "ได้รางวัล")
-            var teams = await _context.Teams
-                .Where(t => t.CompetitionLevelID == competitionLevelID && t.RewardTypeID != null)
-                .Include(t => t.Students)
-                .Include(t => t.schools)
-                .Include(t => t.RewardType)
-                .Include(t => t.CompetitionLevel).ThenInclude(cl => cl.CompetitionYear).ThenInclude(cy => cy.Competition)
-                .Include(t => t.CompetitionLevel).ThenInclude(cl => cl.CompetitionYear).ThenInclude(cy => cy.Year)
-                .AsNoTracking()
-                .ToListAsync(ct);
+            var registrationMode = await _context.CompetitionLevels
+                .Where(level => level.CompetitionLevelID == competitionLevelID)
+                .Select(level => level.CompetitionYear!.RegistrationMode)
+                .FirstOrDefaultAsync(ct);
+
+            List<Team> teams;
+            if (registrationMode == "individual")
+            {
+                // ผู้สมัครเดี่ยวถูกเก็บเป็น Student ที่ผูกกับทีม จัดรูปเป็นทีม
+                // ชั่วคราวทีมละหนึ่งคน เพื่อใช้รูปแบบ PDF เดียวกับผลรางวัลแบบทีม
+                var students = await _context.Students
+                    .Where(student =>
+                        student.Team!.CompetitionLevelID == competitionLevelID &&
+                        student.RewardTypeID != null &&
+                        (student.IsCheckedIn || student.Team.Status == SD.TeamStatus.CheckedIn))
+                    .Include(student => student.RewardType)
+                    .Include(student => student.Team).ThenInclude(team => team.schools)
+                    .Include(student => student.Team).ThenInclude(team => team.CompetitionLevel)
+                        .ThenInclude(level => level!.CompetitionYear).ThenInclude(year => year!.Competition)
+                    .Include(student => student.Team).ThenInclude(team => team.CompetitionLevel)
+                        .ThenInclude(level => level!.CompetitionYear).ThenInclude(year => year!.Year)
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+
+                teams = students.Select(student => new Team
+                {
+                    RewardType = student.RewardType!,
+                    Students = new List<Student> { student },
+                    schools = student.Team!.schools,
+                    CompetitionLevel = student.Team.CompetitionLevel,
+                }).ToList();
+            }
+            else
+            {
+                // 1) ดึงทีมที่มี RewardTypeID (ถือว่า "ได้รางวัล")
+                teams = await _context.Teams
+                    .Where(t => t.CompetitionLevelID == competitionLevelID && t.RewardTypeID != null)
+                    .Include(t => t.Students)
+                    .Include(t => t.schools)
+                    .Include(t => t.RewardType)
+                    .Include(t => t.CompetitionLevel).ThenInclude(cl => cl.CompetitionYear).ThenInclude(cy => cy.Competition)
+                    .Include(t => t.CompetitionLevel).ThenInclude(cl => cl.CompetitionYear).ThenInclude(cy => cy.Year)
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+            }
 
             if (!teams.Any())
                 throw new KeyNotFoundException("ไม่พบทีมผู้ชนะในระดับนี้");
@@ -942,8 +1257,10 @@ namespace ProjectScientDay2568.Service
                                 first = false;
 
                                 // คอลัมน์ "ชื่อ-สกุล" (สมาชิกหลัก)
-                                var names = row.Students != null && row.Students.Any()
-                                    ? string.Join("\n", row.Students.Select(s => $" {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}"))
+                                var names = row.Students != null && row.Students.Any(s => HasExportableStudentName(s.FirstName, s.LastName))
+                                    ? string.Join("\n", row.Students
+                                        .Where(s => HasExportableStudentName(s.FirstName, s.LastName))
+                                        .Select(s => $" {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}"))
                                     : "-";
                                 table.Cell().Element(BodyCell).Text(names).FontSize(12);
 
@@ -1090,6 +1407,528 @@ namespace ProjectScientDay2568.Service
                 };
             }
         }
+
+        public async Task<byte[]> GenerateWinnersFormByYearAsync(int yearID, CancellationToken ct = default)
+        {
+            var levelIds = await _context.CompetitionLevels
+                .Where(level => level.CompetitionYear!.YearID == yearID)
+                .OrderBy(level => level.CompetitionYear!.Competition!.CompetitionName)
+                .ThenBy(level => level.CompetitionDateTime)
+                .Select(level => level.CompetitionLevelID)
+                .ToListAsync(ct);
+
+            if (levelIds.Count == 0)
+                throw new KeyNotFoundException("ไม่พบกิจกรรมในปีการแข่งขันนี้");
+
+            var pageData = new List<(List<Team> Teams, List<(int order, string main, string rank, bool isUnknown, string rewardRaw, string School, List<Student> Students)> Rows)>();
+
+            foreach (var competitionLevelID in levelIds)
+            {
+                var registrationMode = await _context.CompetitionLevels
+                    .Where(level => level.CompetitionLevelID == competitionLevelID)
+                    .Select(level => level.CompetitionYear!.RegistrationMode)
+                    .FirstOrDefaultAsync(ct);
+
+                List<Team> teams;
+                if (registrationMode == "individual")
+                {
+                    var students = await _context.Students
+                        .Where(student =>
+                            student.Team!.CompetitionLevelID == competitionLevelID &&
+                            student.RewardTypeID != null &&
+                            (student.IsCheckedIn || student.Team.Status == SD.TeamStatus.CheckedIn))
+                        .Include(student => student.RewardType)
+                        .Include(student => student.Team).ThenInclude(team => team.schools)
+                        .Include(student => student.Team).ThenInclude(team => team.CompetitionLevel)
+                            .ThenInclude(level => level!.CompetitionYear).ThenInclude(year => year!.Competition)
+                        .Include(student => student.Team).ThenInclude(team => team.CompetitionLevel)
+                            .ThenInclude(level => level!.CompetitionYear).ThenInclude(year => year!.Year)
+                        .Include(student => student.Team).ThenInclude(team => team.CompetitionLevel)
+                            .ThenInclude(level => level!.EducationLevel)
+                        .AsNoTracking()
+                        .ToListAsync(ct);
+
+                    teams = students.Select(student => new Team
+                    {
+                        RewardType = student.RewardType!,
+                        Students = new List<Student> { student },
+                        schools = student.Team!.schools,
+                        CompetitionLevel = student.Team.CompetitionLevel,
+                    }).ToList();
+                }
+                else
+                {
+                    teams = await _context.Teams
+                        .Where(team => team.CompetitionLevelID == competitionLevelID && team.RewardTypeID != null)
+                        .Include(team => team.Students)
+                        .Include(team => team.schools)
+                        .Include(team => team.RewardType)
+                        .Include(team => team.CompetitionLevel).ThenInclude(level => level!.CompetitionYear).ThenInclude(year => year!.Competition)
+                        .Include(team => team.CompetitionLevel).ThenInclude(level => level!.CompetitionYear).ThenInclude(year => year!.Year)
+                        .Include(team => team.CompetitionLevel).ThenInclude(level => level!.EducationLevel)
+                        .AsNoTracking()
+                        .ToListAsync(ct);
+                }
+
+                if (teams.Count == 0)
+                    continue;
+
+                var rows = teams.Select(team =>
+                {
+                    var rewardRaw = team.RewardType?.RewardTypeName ?? "";
+                    var classification = ClassifyReward(rewardRaw);
+                    return (
+                        classification.order,
+                        classification.main,
+                        classification.rank,
+                        classification.isUnknown,
+                        rewardRaw,
+                        School: team.schools?.school_name ?? "",
+                        Students: (team.Students ?? new List<Student>())
+                            .Where(student => student.IsMainMember == true)
+                            .OrderBy(student => student.StudentID)
+                            .ToList());
+                })
+                .Where(row => row.order < 99)
+                .OrderBy(row => row.order)
+                .ToList();
+
+                if (rows.Count > 0)
+                    pageData.Add((teams, rows));
+            }
+
+            if (pageData.Count == 0)
+                throw new KeyNotFoundException("ไม่พบทีมผู้ชนะในปีการแข่งขันนี้");
+
+            FontManager.RegisterFont(File.OpenRead("Fonts/THSarabunNew.ttf"));
+            QuestPDF.Settings.License = LicenseType.Community;
+
+            using var stream = new MemoryStream();
+            QuestPDF.Fluent.Document.Create(doc =>
+            {
+                foreach (var report in pageData)
+                {
+                    var groups = report.Rows
+                        .Select(row => new
+                        {
+                            KeyMain = row.isUnknown ? NormalizeDisplay(row.rewardRaw) : row.main,
+                            KeyRank = row.isUnknown ? "" : row.rank,
+                            row.School,
+                            row.Students,
+                            row.order
+                        })
+                        .GroupBy(row => (row.KeyMain, row.KeyRank))
+                        .OrderBy(group => group.Min(row => row.order))
+                        .ToList();
+
+                    var any = report.Teams.First();
+                    var th = new System.Globalization.CultureInfo("th-TH");
+                    var datetime = any.CompetitionLevel?.CompetitionDateTime.ToString("dd MMMM yyyy", th) ?? "";
+                    var title = any.CompetitionLevel?.CompetitionYear?.Competition?.CompetitionName ?? "";
+                    var levelName = any.CompetitionLevel?.EducationLevel?.LevelName ?? "";
+                    var year = any.CompetitionLevel?.CompetitionYear?.Year?.YearNumber ?? 0;
+
+                    doc.Page(page =>
+                    {
+                        page.Size(PageSizes.A4);
+                        page.Margin(40);
+                        page.DefaultTextStyle(style => style.FontFamily("TH Sarabun New").FontSize(16));
+
+                        page.Header().Column(column =>
+                        {
+                            column.Item().AlignCenter().Text($"ผล{title} ระดับชั้น {levelName}").FontSize(18).Bold();
+                            column.Item().AlignCenter().Text($"งานสัปดาห์วิทยาศาสตร์แห่งชาติ (ส่วนภูมิภาค) ประจำปี {year}").FontSize(16);
+                            column.Item().AlignCenter().Text("มหาวิทยาลัยราชภัฏกาญจนบุรี").FontSize(16);
+                            column.Item().AlignCenter().Text(datetime).FontSize(16);
+                            column.Item().AlignCenter().Text(new string('*', 90)).FontSize(14);
+                        });
+
+                        page.Content().Table(table =>
+                        {
+                            table.ColumnsDefinition(columns =>
+                            {
+                                columns.RelativeColumn(3);
+                                columns.RelativeColumn(6);
+                                columns.RelativeColumn(6);
+                            });
+
+                            table.Header(header =>
+                            {
+                                header.Cell().Element(HeaderCell).Text("รางวัล").AlignCenter().SemiBold();
+                                header.Cell().Element(HeaderCell).Text("ชื่อ-นามสกุล").AlignCenter().SemiBold();
+                                header.Cell().Element(HeaderCell).Text("โรงเรียน").AlignCenter().SemiBold();
+                            });
+
+                            foreach (var group in groups)
+                            {
+                                var first = true;
+                                foreach (var row in group)
+                                {
+                                    table.Cell().Element(cell =>
+                                    {
+                                        cell.Border(1).Padding(6).AlignCenter().AlignMiddle().Column(column =>
+                                        {
+                                            if (first)
+                                            {
+                                                column.Item().AlignCenter().Text(group.Key.KeyMain);
+                                                if (!string.IsNullOrWhiteSpace(group.Key.KeyRank))
+                                                    column.Item().AlignCenter().Text(group.Key.KeyRank);
+                                            }
+                                            else
+                                            {
+                                                column.Item().Text("");
+                                            }
+                                        });
+                                    });
+                                    first = false;
+
+                                    var names = row.Students.Any(student => HasExportableStudentName(student.FirstName, student.LastName))
+                                        ? string.Join("\n", row.Students
+                                            .Where(student => HasExportableStudentName(student.FirstName, student.LastName))
+                                            .Select(student => $" {PrefixToString(student.TitlePrefix)} {student.FirstName} {student.LastName}"))
+                                        : "-";
+                                    table.Cell().Element(BodyCell).Text(names).FontSize(12);
+                                    table.Cell().Element(BodyCell).Text(row.School ?? "-").FontSize(13);
+                                }
+                            }
+                        });
+
+                        page.Footer().Column(column =>
+                        {
+                            column.Item().PaddingTop(30).AlignRight().Text("ลายเซ็นชื่อคณะกรรมการ").FontSize(16);
+                            var labels = new[] { "ประธานกรรมการ", "กรรมการ", "กรรมการ", "กรรมการ", "กรรมการและเลขานุการ" };
+                            foreach (var label in labels)
+                            {
+                                column.Item().PaddingTop(4).PaddingBottom(10).AlignRight().Column(inner =>
+                                {
+                                    inner.Item().Text("ลงชื่อ ................................................................").FontSize(14);
+                                    inner.Item().PaddingTop(2).Text(label).FontSize(14).AlignRight();
+                                });
+                            }
+                        });
+                    });
+                }
+            }).GeneratePdf(stream);
+
+            return stream.ToArray();
+
+            static string ThaiToArabicDigits(string value) => value
+                .Replace("๐", "0").Replace("๑", "1").Replace("๒", "2").Replace("๓", "3").Replace("๔", "4")
+                .Replace("๕", "5").Replace("๖", "6").Replace("๗", "7").Replace("๘", "8").Replace("๙", "9");
+
+            static string NormalizeCompact(string? raw)
+            {
+                var value = ThaiToArabicDigits((raw ?? "").Trim());
+                value = value.Replace("เแข", "แข่งขัน").Replace("เเข่งขัน", "แข่งขัน")
+                    .Replace("เข้าร่วมการเเข่งขัน", "เข้าร่วมการแข่งขัน");
+                return new string(value.Where(character => !char.IsWhiteSpace(character)).ToArray());
+            }
+
+            static string NormalizeDisplay(string? raw) => (raw ?? "").Trim()
+                .Replace("เแข", "แข่งขัน").Replace("เเข่งขัน", "แข่งขัน")
+                .Replace("เข้าร่วมการเเข่งขัน", "เข้าร่วมการแข่งขัน");
+
+            static (int order, string main, string rank, bool isUnknown) ClassifyReward(string? raw)
+            {
+                var compact = NormalizeCompact(raw);
+                if (string.IsNullOrEmpty(compact) || compact.Contains("เข้าร่วม")) return (99, "", "", true);
+                if (compact.Contains("รองชนะเลิศ"))
+                {
+                    if (compact.Contains("อันดับ1") || compact.Contains("อันดับที่1") || compact.Contains("อันดับหนึ่ง")) return (20, "รางวัลรองชนะเลิศ", "อันดับ 1", false);
+                    if (compact.Contains("อันดับ2") || compact.Contains("อันดับที่2") || compact.Contains("อันดับสอง")) return (30, "รางวัลรองชนะเลิศ", "อันดับ 2", false);
+                    return (25, "รางวัลรองชนะเลิศ", "", false);
+                }
+                if (compact.Contains("ชนะเลิศ") && compact.Contains("อันดับ") && !compact.Contains("รอง"))
+                {
+                    if (compact.Contains("อันดับ1") || compact.Contains("อันดับที่1") || compact.Contains("อันดับหนึ่ง")) return (20, "รางวัลรองชนะเลิศ", "อันดับ 1", false);
+                    if (compact.Contains("อันดับ2") || compact.Contains("อันดับที่2") || compact.Contains("อันดับสอง")) return (30, "รางวัลรองชนะเลิศ", "อันดับ 2", false);
+                }
+                if (compact.Contains("ชนะเลิศ") && !compact.Contains("รอง") && !compact.Contains("อันดับ")) return (10, "รางวัลชนะเลิศ", "", false);
+                if (compact.Contains("ชมเชย")) return (40, "รางวัลชมเชย", "", false);
+                return (50, NormalizeDisplay(raw), "", true);
+            }
+
+            static IContainer HeaderCell(IContainer container) => container.Border(1).Padding(6).AlignCenter().AlignMiddle();
+            static IContainer BodyCell(IContainer container) => container.Border(1).Padding(6).AlignTop().AlignLeft();
+            static string PrefixToString(ProjectScientDay2568.Utility.SD.TitlePrefix prefix) => prefix switch
+            {
+                ProjectScientDay2568.Utility.SD.TitlePrefix.เด็กชาย => "เด็กชาย",
+                ProjectScientDay2568.Utility.SD.TitlePrefix.เด็กหญิง => "เด็กหญิง",
+                ProjectScientDay2568.Utility.SD.TitlePrefix.นาย => "นาย",
+                ProjectScientDay2568.Utility.SD.TitlePrefix.นางสาว => "นางสาว",
+                ProjectScientDay2568.Utility.SD.TitlePrefix.นาง => "นาง",
+                _ => ""
+            };
+        }
+
+        private sealed record WinnersWordRow(int Order, string Award, string School, List<string> Names);
+        private sealed record WinnersWordSection(string CompetitionName, string LevelName, int YearNumber, string Date, List<WinnersWordRow> Rows);
+
+        public Task<byte[]> GenerateWinnersFormWordAsync(int competitionLevelId, CancellationToken ct = default)
+        {
+            return GenerateWinnersFormWordForLevelsAsync(new[] { competitionLevelId }, ct);
+        }
+
+        public async Task<byte[]> GenerateWinnersFormByYearWordAsync(int yearId, CancellationToken ct = default)
+        {
+            var levelIds = await _context.CompetitionLevels
+                .Where(level => level.CompetitionYear!.YearID == yearId)
+                .Select(level => level.CompetitionLevelID)
+                .ToListAsync(ct);
+
+            if (levelIds.Count == 0)
+                throw new KeyNotFoundException("ไม่พบกิจกรรมในปีการแข่งขันนี้");
+
+            return await GenerateWinnersFormWordForLevelsAsync(levelIds, ct);
+        }
+
+        private async Task<byte[]> GenerateWinnersFormWordForLevelsAsync(IReadOnlyCollection<int> levelIds, CancellationToken ct)
+        {
+            var levels = await _context.CompetitionLevels
+                .Where(level => levelIds.Contains(level.CompetitionLevelID))
+                .Include(level => level.EducationLevel)
+                .Include(level => level.CompetitionYear).ThenInclude(year => year!.Competition)
+                .Include(level => level.CompetitionYear).ThenInclude(year => year!.Year)
+                .AsNoTracking()
+                .OrderBy(level => level.CompetitionYear!.Competition!.CompetitionName)
+                .ThenBy(level => level.EducationLevel!.LevelName)
+                .ToListAsync(ct);
+
+            if (levels.Count == 0)
+                throw new KeyNotFoundException("ไม่พบระดับการแข่งขันนี้");
+
+            var individualLevelIds = levels
+                .Where(level => level.CompetitionYear?.RegistrationMode == "individual")
+                .Select(level => level.CompetitionLevelID)
+                .ToList();
+            var teamLevelIds = levels
+                .Where(level => level.CompetitionYear?.RegistrationMode != "individual")
+                .Select(level => level.CompetitionLevelID)
+                .ToList();
+
+            var teams = teamLevelIds.Count == 0
+                ? new List<Team>()
+                : await _context.Teams
+                    .Where(team => team.CompetitionLevelID.HasValue &&
+                        teamLevelIds.Contains(team.CompetitionLevelID.Value) && team.RewardTypeID != null)
+                    .Include(team => team.Students)
+                    .Include(team => team.schools)
+                    .Include(team => team.RewardType)
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+
+            var individualStudents = individualLevelIds.Count == 0
+                ? new List<Student>()
+                : await _context.Students
+                    .Where(student => student.Team!.CompetitionLevelID.HasValue &&
+                        individualLevelIds.Contains(student.Team.CompetitionLevelID.Value) &&
+                        student.RewardTypeID != null &&
+                        (student.IsCheckedIn || student.Team.Status == SD.TeamStatus.CheckedIn))
+                    .Include(student => student.RewardType)
+                    .Include(student => student.Team).ThenInclude(team => team!.schools)
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+
+            var sections = new List<WinnersWordSection>();
+            foreach (var level in levels)
+            {
+                var rows = new List<WinnersWordRow>();
+                if (level.CompetitionYear?.RegistrationMode == "individual")
+                {
+                    foreach (var student in individualStudents.Where(student => student.Team?.CompetitionLevelID == level.CompetitionLevelID))
+                    {
+                        var award = ClassifyWinnersWordAward(student.RewardType?.RewardTypeName);
+                        if (award.Order == 99) continue;
+
+                        var name = HasExportableStudentName(student.FirstName, student.LastName)
+                            ? FormatPerson(student.TitlePrefix, student.FirstName, student.LastName) ?? "-"
+                            : "-";
+                        rows.Add(new WinnersWordRow(
+                            award.Order,
+                            award.Label,
+                            student.Team?.schools?.school_name ?? "",
+                            new List<string> { name }));
+                    }
+                }
+                else
+                {
+                    foreach (var team in teams.Where(team => team.CompetitionLevelID == level.CompetitionLevelID))
+                    {
+                        var award = ClassifyWinnersWordAward(team.RewardType?.RewardTypeName);
+                        if (award.Order == 99) continue;
+
+                        var names = team.Students?
+                            .Where(student => student.IsMainMember && HasExportableStudentName(student.FirstName, student.LastName))
+                            .OrderBy(student => student.StudentID)
+                            .Select(student => FormatPerson(student.TitlePrefix, student.FirstName, student.LastName) ?? "-")
+                            .ToList() ?? new List<string>();
+                        if (names.Count == 0) names.Add("-");
+
+                        rows.Add(new WinnersWordRow(
+                            award.Order,
+                            award.Label,
+                            team.schools?.school_name ?? "",
+                            names));
+                    }
+                }
+
+                if (rows.Count == 0) continue;
+
+                sections.Add(new WinnersWordSection(
+                    level.CompetitionYear?.Competition?.CompetitionName ?? "",
+                    level.EducationLevel?.LevelName ?? "",
+                    level.CompetitionYear?.Year?.YearNumber ?? 0,
+                    level.CompetitionDateTime.ToString("dd MMMM yyyy", CultureInfo.GetCultureInfo("th-TH")),
+                    rows.OrderBy(row => row.Order).ToList()));
+            }
+
+            if (sections.Count == 0)
+                throw new KeyNotFoundException("ไม่พบผู้ชนะในระดับหรือปีการแข่งขันนี้");
+
+            using var stream = new MemoryStream();
+            using (var wordDoc = WordprocessingDocument.Create(stream, WordprocessingDocumentType.Document, true))
+            {
+                var mainPart = wordDoc.AddMainDocumentPart();
+                mainPart.Document = new DocumentFormat.OpenXml.Wordprocessing.Document(new Body());
+                var body = mainPart.Document.Body!;
+
+                var reportHeader = sections[0];
+                body.Append(CreateWinnersWordParagraph(
+                    $"งานสัปดาห์วิทยาศาสตร์แห่งชาติ (ส่วนภูมิภาค) ประจำปี {reportHeader.YearNumber}", 32));
+                body.Append(CreateWinnersWordParagraph("มหาวิทยาลัยราชภัฏกาญจนบุรี", 32));
+                body.Append(CreateWinnersWordParagraph(reportHeader.Date, 32));
+                foreach (var section in sections)
+                {
+                    body.Append(CreateWinnersWordParagraph(
+                        $"ผล{section.CompetitionName} ระดับชั้น {section.LevelName}",
+                        36, bold: true));
+                    body.Append(CreateWinnersWordParagraph(new string('*', 90), 28));
+
+                    var table = new Table(
+                        new TableProperties(
+                            new TableWidth { Width = "10000", Type = TableWidthUnitValues.Dxa },
+                            new TableBorders(
+                                new TopBorder { Val = BorderValues.Single, Size = 8 },
+                                new BottomBorder { Val = BorderValues.Single, Size = 8 },
+                                new LeftBorder { Val = BorderValues.Single, Size = 8 },
+                                new RightBorder { Val = BorderValues.Single, Size = 8 },
+                                new InsideHorizontalBorder { Val = BorderValues.Single, Size = 8 },
+                                new InsideVerticalBorder { Val = BorderValues.Single, Size = 8 })),
+                        new TableGrid(
+                            new GridColumn { Width = "2000" },
+                            new GridColumn { Width = "4000" },
+                            new GridColumn { Width = "4000" }));
+
+                    table.Append(new TableRow(
+                        new TableRowProperties(new TableHeader()),
+                        CreateWinnersWordCell(new[] { "รางวัล" }, 2000, center: true, bold: true, fontSize: 32),
+                        CreateWinnersWordCell(new[] { "ชื่อ-นามสกุล" }, 4000, center: true, bold: true, fontSize: 32),
+                        CreateWinnersWordCell(new[] { "โรงเรียน" }, 4000, center: true, bold: true, fontSize: 32)));
+
+                    foreach (var group in section.Rows.GroupBy(row => row.Award).OrderBy(group => group.Min(row => row.Order)))
+                    {
+                        var first = true;
+                        foreach (var row in group)
+                        {
+                            table.Append(new TableRow(
+                                CreateWinnersWordCell(first ? row.Award.Split('\n') : Array.Empty<string>(), 2000, center: true, fontSize: 32),
+                                CreateWinnersWordCell(row.Names, 4000, fontSize: 24),
+                                CreateWinnersWordCell(new[] { row.School }, 4000, fontSize: 26)));
+                            first = false;
+                        }
+                    }
+
+                    body.Append(table);
+                }
+
+                body.Append(CreatePortraitSection());
+                mainPart.Document.Save();
+            }
+
+            return stream.ToArray();
+        }
+
+        private static (int Order, string Label) ClassifyWinnersWordAward(string? raw)
+        {
+            var compact = (raw ?? "").Trim()
+                .Replace("๐", "0").Replace("๑", "1").Replace("๒", "2")
+                .Replace("๓", "3").Replace("๔", "4").Replace("๕", "5")
+                .Replace("๖", "6").Replace("๗", "7").Replace("๘", "8").Replace("๙", "9")
+                .Replace("เแข", "แข่งขัน").Replace("เเข่งขัน", "แข่งขัน");
+            compact = new string(compact.Where(character => !char.IsWhiteSpace(character)).ToArray());
+
+            if (compact.Length == 0 || compact.Contains("เข้าร่วม")) return (99, "");
+            if (compact.Contains("รองชนะเลิศ") || (compact.Contains("ชนะเลิศ") && compact.Contains("อันดับ")))
+            {
+                if (compact.Contains("อันดับ1") || compact.Contains("อันดับที่1") || compact.Contains("อันดับหนึ่ง"))
+                    return (20, "รางวัลรองชนะเลิศ\nอันดับ 1");
+                if (compact.Contains("อันดับ2") || compact.Contains("อันดับที่2") || compact.Contains("อันดับสอง"))
+                    return (30, "รางวัลรองชนะเลิศ\nอันดับ 2");
+                return (25, "รางวัลรองชนะเลิศ");
+            }
+            if (compact.Contains("ชนะเลิศ")) return (10, "รางวัลชนะเลิศ");
+            if (compact.Contains("ชมเชย")) return (40, "รางวัลชมเชย");
+            return (50, (raw ?? "").Trim()
+                .Replace("เแข", "แข่งขัน").Replace("เเข่งขัน", "แข่งขัน"));
+        }
+
+        private static Paragraph CreateWinnersWordParagraph(string text, int fontSize, bool bold = false)
+        {
+            var properties = new ParagraphProperties();
+
+            properties.Append(new SpacingBetweenLines { Before = "0", After = "0" });
+            properties.Append(new Justification { Val = JustificationValues.Center });
+
+            var runProperties = CreateWinnersWordRunProperties(fontSize, bold);
+            return new Paragraph(properties,
+                new Run(runProperties, new Text(text) { Space = SpaceProcessingModeValues.Preserve }));
+        }
+
+        private static TableCell CreateWinnersWordCell(IEnumerable<string> lines, int widthTwips,
+            bool center = false, bool bold = false, int fontSize = 26)
+        {
+            var paragraphProperties = new ParagraphProperties(
+                new SpacingBetweenLines { Before = "60", After = "60" },
+                new Justification { Val = center ? JustificationValues.Center : JustificationValues.Left });
+            var run = new Run(CreateWinnersWordRunProperties(fontSize, bold));
+            var first = true;
+            foreach (var line in lines)
+            {
+                if (!first) run.Append(new Break());
+                run.Append(new Text(line) { Space = SpaceProcessingModeValues.Preserve });
+                first = false;
+            }
+            if (first) run.Append(new Text("") { Space = SpaceProcessingModeValues.Preserve });
+
+            return new TableCell(
+                new TableCellProperties(new TableCellWidth
+                {
+                    Type = TableWidthUnitValues.Dxa,
+                    Width = widthTwips.ToString()
+                }),
+                new Paragraph(paragraphProperties, run));
+        }
+
+        private static RunProperties CreateWinnersWordRunProperties(int fontSize, bool bold)
+        {
+            var properties = new RunProperties(
+                new RunFonts
+                {
+                    Ascii = "TH Sarabun New",
+                    HighAnsi = "TH Sarabun New",
+                    EastAsia = "TH Sarabun New",
+                    ComplexScript = "TH Sarabun New"
+                });
+            if (bold)
+            {
+                properties.Append(new Bold());
+                properties.Append(new BoldComplexScript());
+            }
+            properties.Append(new FontSize { Val = fontSize.ToString() });
+            properties.Append(new FontSizeComplexScript { Val = fontSize.ToString() });
+            return properties;
+        }
+
         public async Task<byte[]> GenerateTeamReportWordByCompetitionYearAsync(int competitionYearID)
         {
             var teams = await _context.Teams
@@ -1168,15 +2007,14 @@ namespace ProjectScientDay2568.Service
 
                     table.AppendChild(tblProps);
 
+                    table.AppendChild(CreateTableGrid("700", "2000", "3000", "2800", "1000"));
+
                     var headerRow = new TableRow();
 
                     headerRow.Append(
                         CreateHeaderCell("ลำดับ", "700"),
                         CreateHeaderCell("โรงเรียน", "2000")
                     );
-
-                    if (includeProjectColumn)
-                        headerRow.Append(CreateHeaderCell("ชื่อโครงงาน", "3500"));
 
                     headerRow.Append(
                         CreateHeaderCell("ผู้สมัครแข่งขัน", "3000"),
@@ -1194,9 +2032,13 @@ namespace ProjectScientDay2568.Service
                             ? "—"
                             : team.schools.school_name;
 
-                        var schoolName = Regex.Replace(schoolNameRaw, @"\s*[\d๐-๙]+$", "");
+                        // The trailing 3 is part of this school's official branch name.
+                        var schoolName = schoolNameRaw == "โรงเรียนบรรหารแจ่มใสวิทยา 3"
+                            ? schoolNameRaw
+                            : Regex.Replace(schoolNameRaw, @"\s*[\d๐-๙]+$", "");
 
                         var studentList = team.Students
+                            .Where(s => HasExportableStudentName(s.FirstName, s.LastName))
                             .Select((s, i) =>
                                 $"{i + 1}. {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}");
 
@@ -1228,20 +2070,15 @@ namespace ProjectScientDay2568.Service
                             }
                         }
 
+                        var project = includeProjectColumn ? team.ProjectName?.Trim() : null;
+                        var hasProject = !string.IsNullOrEmpty(project);
+
                         var row = new TableRow();
 
                         row.Append(
-                            CreateTableCell(index++.ToString(), "700"),
+                            MergeDown(CreateTableCell(index++.ToString(), "700"), hasProject, restart: true),
                             CreateTableCell(schoolName, "2000")
                         );
-
-                        if (includeProjectColumn)
-                        {
-                            row.Append(CreateTableCell(
-                                string.IsNullOrWhiteSpace(team.ProjectName) ? "" : team.ProjectName,
-                                "3500"
-                            ));
-                        }
 
                         row.Append(
                             CreateParagraphCell(studentList, "3000"),
@@ -1250,15 +2087,14 @@ namespace ProjectScientDay2568.Service
                         );
 
                         table.Append(row);
+                        if (hasProject)
+                            table.Append(CreateProjectRow(project!, "700", "8800", 4));
                     }
 
                     body.Append(table);
                 }
 
-                if (includeProjectColumn)
-                    body.Append(CreateLandscapeSection());
-                else
-                    body.Append(CreatePortraitSection());
+                body.Append(CreatePortraitSection());
 
                 mainPart.Document.Append(body);
             }
@@ -1342,15 +2178,14 @@ namespace ProjectScientDay2568.Service
 
                     table.AppendChild(tblProps);
 
+                    table.AppendChild(CreateTableGrid("700", "2000", "3000", "2800", "1000"));
+
                     var headerRow = new TableRow();
 
                     headerRow.Append(
                         CreateHeaderCell("ลำดับ", "700"),
                         CreateHeaderCell("โรงเรียน", "2000")
                     );
-
-                    if (includeProjectColumn)
-                        headerRow.Append(CreateHeaderCell("ชื่อโครงงาน", "3500"));
 
                     headerRow.Append(
                         CreateHeaderCell("ผู้สมัครแข่งขัน", "3000"),
@@ -1368,9 +2203,13 @@ namespace ProjectScientDay2568.Service
                             ? "—"
                             : team.schools.school_name;
 
-                        var schoolName = Regex.Replace(schoolNameRaw, @"\s*[\d๐-๙]+$", "");
+                        // The trailing 3 is part of this school's official branch name.
+                        var schoolName = schoolNameRaw == "โรงเรียนบรรหารแจ่มใสวิทยา 3"
+                            ? schoolNameRaw
+                            : Regex.Replace(schoolNameRaw, @"\s*[\d๐-๙]+$", "");
 
                         var studentList = team.Students
+                            .Where(s => HasExportableStudentName(s.FirstName, s.LastName))
                             .Select((s, i) =>
                                 $"{i + 1}. {PrefixToString(s.TitlePrefix)} {s.FirstName} {s.LastName}");
 
@@ -1398,20 +2237,15 @@ namespace ProjectScientDay2568.Service
                                 advisorLines.Add(secondaryAdvisor);
                         }
 
+                        var project = includeProjectColumn ? team.ProjectName?.Trim() : null;
+                        var hasProject = !string.IsNullOrEmpty(project);
+
                         var row = new TableRow();
 
                         row.Append(
-                            CreateTableCell(index++.ToString(), "700"),
+                            MergeDown(CreateTableCell(index++.ToString(), "700"), hasProject, restart: true),
                             CreateTableCell(schoolName, "2000")
                         );
-
-                        if (includeProjectColumn)
-                        {
-                            row.Append(CreateTableCell(
-                                string.IsNullOrWhiteSpace(team.ProjectName) ? "" : team.ProjectName,
-                                "3500"
-                            ));
-                        }
 
                         row.Append(
                             CreateParagraphCell(studentList, "3000"),
@@ -1420,15 +2254,14 @@ namespace ProjectScientDay2568.Service
                         );
 
                         table.Append(row);
+                        if (hasProject)
+                            table.Append(CreateProjectRow(project!, "700", "8800", 4));
                     }
 
                     body.Append(table);
                 }
 
-                if (includeProjectColumn)
-                    body.Append(CreateLandscapeSection());
-                else
-                    body.Append(CreatePortraitSection());
+                body.Append(CreatePortraitSection());
 
                 mainPart.Document.Append(body);
             }
@@ -1717,6 +2550,156 @@ namespace ProjectScientDay2568.Service
             IContainer HeaderCellStyle(IContainer c) => c.Border(1).Background("#E2E8F0").Padding(6);
         }
 
+        public async Task<byte[]> GenerateCompetitionAttendanceReportPdfAsync(int yearId)
+        {
+            var year = await _context.Years
+                .AsNoTracking()
+                .FirstOrDefaultAsync(y => y.YearID == yearId);
+
+            if (year == null)
+                throw new KeyNotFoundException("ไม่พบปีที่ต้องการ");
+
+            var competitionYears = await _context.CompetitionYears
+                .AsNoTracking()
+                .Include(cy => cy.Competition)
+                .Where(cy => cy.YearID == yearId && cy.IsActive)
+                .OrderBy(cy => cy.Competition!.CompetitionName)
+                .ToListAsync();
+
+            var competitionYearIds = competitionYears.Select(cy => cy.CompetitionYearID).ToList();
+            var competitionLevels = await _context.CompetitionLevels
+                .AsNoTracking()
+                .Include(cl => cl.EducationLevel)
+                .Where(cl => competitionYearIds.Contains(cl.CompetitionYearID))
+                .ToListAsync();
+            var competitionLevelIds = competitionLevels.Select(cl => cl.CompetitionLevelID).ToHashSet();
+            var teams = await _context.Teams
+                .AsNoTracking()
+                .Include(t => t.Students)
+                .Where(t => t.CompetitionLevelID.HasValue && competitionLevelIds.Contains(t.CompetitionLevelID.Value))
+                .ToListAsync();
+
+            if (!competitionYears.Any())
+                throw new KeyNotFoundException("ไม่พบกิจกรรมในปีที่เลือก");
+
+            var registeredTeams = teams.Where(t => t.Status != TeamStatus.Disqualified).ToList();
+            var checkedInTeams = registeredTeams.Where(t => t.Status == TeamStatus.CheckedIn).ToList();
+
+            EnsureFontRegistered();
+            QuestPDF.Settings.License = LicenseType.Community;
+
+            using var stream = new MemoryStream();
+
+            QuestPDF.Fluent.Document.Create(document =>
+            {
+                document.Page(page =>
+                {
+                    page.Size(PageSizes.A4.Landscape());
+                    page.Margin(22);
+                    page.DefaultTextStyle(x => x.FontSize(13).FontFamily("TH Sarabun New"));
+
+                    page.Header().Column(column =>
+                    {
+                        column.Item().AlignCenter().Text($"รายงานผู้สมัครและผู้ลงทะเบียนเข้างานการแข่งขันสัปดาห์วิทยาศาสตร์ {year.YearName}")
+                            .FontSize(21).SemiBold();
+                        column.Item().PaddingTop(2).AlignCenter().Text($"จัดทำเมื่อ {DateTime.Now:dd/MM/yyyy HH:mm} น.")
+                            .FontSize(11).FontColor("#475569");
+                    });
+
+                    page.Content().PaddingVertical(12).Column(column =>
+                    {
+                        column.Spacing(10);
+                        column.Item().Table(table =>
+                        {
+                            table.ColumnsDefinition(columns =>
+                            {
+                                columns.RelativeColumn(2);
+                                columns.RelativeColumn(2);
+                                columns.RelativeColumn(2);
+                            });
+
+                            SummaryCell(table, "กิจกรรม", competitionYears.Count.ToString());
+                            SummaryCell(table, "ทีมลงทะเบียนเข้าร่วมงาน", checkedInTeams.Count.ToString());
+                            SummaryCell(table, "นักเรียนเข้าร่วมงาน", checkedInTeams.Sum(t => t.Students?.Count ?? 0).ToString());
+                        });
+
+                        column.Item().Text("สรุปทีมและนักเรียนที่ลงทะเบียนเข้าร่วมงานรายกิจกรรมและระดับชั้น").FontSize(16).SemiBold();
+                        column.Item().Table(table =>
+                        {
+                            table.ColumnsDefinition(columns =>
+                            {
+                                columns.RelativeColumn(5);
+                                columns.RelativeColumn(3);
+                                columns.RelativeColumn(3);
+                            });
+
+                            table.Header(header =>
+                            {
+                                header.Cell().Border(1).BorderColor("#94A3B8").Background("#1E293B").Padding(5).AlignCenter().Text("กิจกรรม / ระดับชั้น").FontColor("#FFFFFF").SemiBold();
+                                header.Cell().Border(1).BorderColor("#94A3B8").Background("#1E293B").Padding(5).AlignCenter().Text("ทีมลงทะเบียนเข้าร่วมงาน").FontColor("#FFFFFF").SemiBold();
+                                header.Cell().Border(1).BorderColor("#94A3B8").Background("#1E293B").Padding(5).AlignCenter().Text("นักเรียนเข้าร่วมงาน").FontColor("#FFFFFF").SemiBold();
+                            });
+
+                            foreach (var competitionYear in competitionYears)
+                            {
+                                var levelIds = competitionLevels
+                                    .Where(cl => cl.CompetitionYearID == competitionYear.CompetitionYearID)
+                                    .Select(cl => cl.CompetitionLevelID)
+                                    .ToHashSet();
+                                var activityTeams = registeredTeams
+                                    .Where(t => t.CompetitionLevelID.HasValue && levelIds.Contains(t.CompetitionLevelID.Value))
+                                    .ToList();
+                                var activityCheckedInTeams = activityTeams
+                                    .Where(t => t.Status == TeamStatus.CheckedIn)
+                                    .ToList();
+
+                                DataCell(table, competitionYear.Competition?.CompetitionName ?? "-", true);
+                                DataCell(table, activityCheckedInTeams.Count.ToString(), true, true);
+                                DataCell(table, activityCheckedInTeams.Sum(t => t.Students?.Count ?? 0).ToString(), true, true);
+
+                                foreach (var level in competitionLevels.Where(cl => cl.CompetitionYearID == competitionYear.CompetitionYearID).OrderBy(cl => cl.EducationLevel!.LevelName))
+                                {
+                                    var levelTeams = activityTeams.Where(t => t.CompetitionLevelID == level.CompetitionLevelID).ToList();
+                                    var levelCheckedInTeams = levelTeams.Where(t => t.Status == TeamStatus.CheckedIn).ToList();
+
+                                    DataCell(table, $"   {level.EducationLevel?.LevelName ?? "-"}");
+                                    DataCell(table, levelCheckedInTeams.Count.ToString(), false, true);
+                                    DataCell(table, levelCheckedInTeams.Sum(t => t.Students?.Count ?? 0).ToString(), false, true);
+                                }
+                            }
+                        });
+                    });
+
+                    page.Footer().AlignRight().Text(text =>
+                    {
+                        text.Span("หน้าที่ ");
+                        text.CurrentPageNumber();
+                        text.Span(" / ");
+                        text.TotalPages();
+                    });
+                });
+            }).GeneratePdf(stream);
+
+            return stream.ToArray();
+
+            static void SummaryCell(TableDescriptor table, string label, string value)
+            {
+                table.Cell().Border(1).BorderColor("#CBD5E1").Background("#F8FAFC").Padding(7).Column(column =>
+                {
+                    column.Item().Text(label).FontSize(11).FontColor("#475569");
+                    column.Item().Text(value).FontSize(18).SemiBold().FontColor("#0F172A");
+                });
+            }
+
+            static void DataCell(TableDescriptor table, string text, bool bold = false, bool center = false)
+            {
+                var cell = table.Cell().Border(1).BorderColor("#CBD5E1").Padding(5).AlignMiddle();
+                if (center) cell = cell.AlignCenter();
+                var content = cell.Text(text);
+                if (bold) content.SemiBold();
+            }
+        }
+
         /* ================= Helpers ================= */
 
 
@@ -1750,6 +2733,46 @@ namespace ProjectScientDay2568.Service
                 )
             };
         }
+        // ความกว้างคอลัมน์ของตาราง Word (ต้องมีเพื่อให้ gridSpan แสดงถูกใน Word)
+        private static TableGrid CreateTableGrid(params string[] widthsTwips) =>
+            new(widthsTwips.Select(w => new GridColumn { Width = w }));
+
+        // รวมช่องแนวตั้ง (ใช้กับ "ลำดับ" ให้คลุมทั้งแถวทีมและแถวชื่อโครงงาน)
+        private static TableCell MergeDown(TableCell cell, bool merge, bool restart)
+        {
+            if (merge)
+                cell.TableCellProperties!.Append(new VerticalMerge { Val = restart ? MergedCellValues.Restart : MergedCellValues.Continue });
+            return cell;
+        }
+
+        // แถวชื่อโครงงาน: ช่องลำดับต่อจากแถวบน + ช่องกว้างเต็มที่เหลือ
+        private static TableRow CreateProjectRow(string project, string indexWidth, string spanWidth, int span)
+        {
+            var cell = new TableCell(
+                new TableCellProperties(
+                    new TableCellWidth { Type = TableWidthUnitValues.Dxa, Width = spanWidth },
+                    new GridSpan { Val = span },
+                    new Shading { Val = ShadingPatternValues.Clear, Color = "auto", Fill = "F3F4F6" }
+                ),
+                new Paragraph(
+                    new ParagraphProperties(new SpacingBetweenLines { Before = "40", After = "40" }),
+                    new Run(ThaiRunProps(bold: true), new Text("ชื่อโครงงาน: ") { Space = SpaceProcessingModeValues.Preserve }),
+                    new Run(ThaiRunProps(bold: false), new Text(project) { Space = SpaceProcessingModeValues.Preserve })
+                )
+            );
+            return new TableRow(MergeDown(CreateTableCell("", indexWidth), true, restart: false), cell);
+        }
+
+        private static RunProperties ThaiRunProps(bool bold)
+        {
+            var p = new RunProperties(
+                new RunFonts { Ascii = "TH Sarabun New", HighAnsi = "TH Sarabun New", EastAsia = "TH Sarabun New", ComplexScript = "TH Sarabun New" },
+                new FontSize { Val = "32" } // 16 pt
+            );
+            if (bold) p.Append(new Bold());
+            return p;
+        }
+
         private static TableCell CreateTableCell(string text, string widthTwips)
         {
             var para = new Paragraph(
@@ -1838,6 +2861,19 @@ namespace ProjectScientDay2568.Service
 
             return runProps;
         }
+        private static bool HasExportableStudentName(string? firstName, string? lastName)
+        {
+            static bool IsPlaceholder(string? value)
+            {
+                var normalized = value?.Trim();
+                return string.IsNullOrWhiteSpace(normalized) || normalized == "-";
+            }
+
+            // คำนำหน้าไม่เกี่ยวกับความถูกต้องของชื่อ: ตัดเฉพาะรายการที่
+            // ทั้งชื่อและนามสกุลไม่มีข้อมูลจริง เช่น "เด็กหญิง - -".
+            return !IsPlaceholder(firstName) || !IsPlaceholder(lastName);
+        }
+
         static string? FormatPerson(TitlePrefix prefix, string? first, string? last)
         {
             var title = prefix != TitlePrefix.Other ? prefix.ToString() : "";

@@ -1,4 +1,6 @@
-﻿using ProjectScientDay2568.Models.Dtos;
+﻿using Microsoft.AspNetCore.RateLimiting;
+using ProjectScientDay2568.Helper;
+using ProjectScientDay2568.Models.Dtos;
 using ProjectScientDay2568.Models.Dtos.News;
 
 namespace ProjectScientDay2568.Controllers
@@ -65,6 +67,7 @@ namespace ProjectScientDay2568.Controllers
         [HttpPost]
         [RequestSizeLimit(20_000_000)]
         [Consumes("multipart/form-data")]
+        [EnableRateLimiting(RateLimitPolicies.Upload)]
         public async Task<IActionResult> Post([FromForm] NewsCreateForm form)
         {
             var response = new ApiResponse();
@@ -106,6 +109,7 @@ namespace ProjectScientDay2568.Controllers
         [HttpPut("{id:int}")]
         [RequestSizeLimit(20_000_000)]
         [Consumes("multipart/form-data")]
+        [EnableRateLimiting(RateLimitPolicies.Upload)]
         public async Task<IActionResult> Put(int id, [FromForm] NewsUpdateForm form)
         {
             var response = new ApiResponse();

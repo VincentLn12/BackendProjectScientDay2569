@@ -1,4 +1,6 @@
-﻿using System.Security.Claims;
+﻿using Microsoft.AspNetCore.RateLimiting;
+using ProjectScientDay2568.Helper;
+using System.Security.Claims;
 using ProjectScientDay2568.Models.Dtos.Team;
 
 namespace ProjectScientDay2568.Controllers
@@ -76,6 +78,7 @@ namespace ProjectScientDay2568.Controllers
         }
 
         [HttpPost]
+        [EnableRateLimiting(RateLimitPolicies.Upload)]
         public async Task<IActionResult> Post([FromForm] TeamCreateDto form)
         {
             var response = new ApiResponse();
@@ -114,6 +117,13 @@ namespace ProjectScientDay2568.Controllers
                 response.IsSuccess = true;
                 response.Result = createdTeam;
                 return StatusCode((int)response.StatusCode, response);
+            }
+            catch (ArgumentException ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.BadRequest;
+                response.ErrorMessages.Add(ex.Message);
+                return BadRequest(response);
             }
             catch (InvalidOperationException ex)
             {
@@ -212,8 +222,42 @@ namespace ProjectScientDay2568.Controllers
             }
             return HandleResponse(response);
         }
-
-       
-
+        [HttpPut("change-level")]
+        public async Task<IActionResult> ChangeLevel([FromBody] ChangeTeamLevelDto req)
+        {
+            var response = new ApiResponse();
+            try
+            {
+                await _team.ChangeTeamLevelAsync(req);
+                response.StatusCode = HttpStatusCode.OK;
+                response.IsSuccess = true;
+                response.Result = "ย้ายระดับชั้นของทีมสำเร็จ";
+            }
+            catch (InvalidOperationException ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.BadRequest;
+                response.ErrorMessages.Add(ex.Message);
+            }
+            catch (KeyNotFoundException knfEx)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.NotFound;
+                response.ErrorMessages.Add(knfEx.Message);
+            }
+            catch (ArgumentException argEx)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.BadRequest;
+                response.ErrorMessages.Add(argEx.Message);
+            }
+            catch (Exception ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.InternalServerError;
+                response.ErrorMessages.Add(ex.Message);
+            }
+            return HandleResponse(response);
+        }
     }
 }

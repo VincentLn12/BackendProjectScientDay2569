@@ -1,4 +1,6 @@
-﻿
+﻿using Microsoft.AspNetCore.RateLimiting;
+using ProjectScientDay2568.Helper;
+
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.IdentityModel.Tokens;
@@ -35,6 +37,7 @@ namespace ProjectScientDay2568.Controllers
           => StatusCode((int)response.StatusCode, response);
 
         [HttpPost("register")]
+        [EnableRateLimiting(RateLimitPolicies.Sensitive)]
         public async Task<IActionResult> Register([FromBody] RegisterRequestDTO model)
         {
             ApplicationUser userFromDb = await _db.ApplicationUsers
@@ -93,20 +96,53 @@ namespace ProjectScientDay2568.Controllers
         }
 
         [HttpPost("login")]
-        public async Task<IActionResult> Login([FromBody] LoginRequestDTO model)
+        [EnableRateLimiting(RateLimitPolicies.Login)]
+        public async Task<IActionResult> Login([FromBody] LoginRequestDTO model, [FromServices] AuditLogService audit)
         {
             ApplicationUser userFromDb = await _db.ApplicationUsers
                     .FirstOrDefaultAsync(u => u.UserName.ToLower() == model.UserName.ToLower());
 
-            bool isValid = await _userManager.CheckPasswordAsync(userFromDb, model.Password);
+            if (userFromDb != null && !AccountSuspension.IsSuspended(userFromDb) && await _userManager.IsLockedOutAsync(userFromDb))
+            {
+                var minutes = Math.Max(1, (int)Math.Ceiling((userFromDb.LockoutEnd!.Value - DateTimeOffset.UtcNow).TotalMinutes));
+                await audit.LogAsync(AuditActions.LoginBlockedLockedOut, userFromDb.UserName, actor: userFromDb.UserName);
+                _response.Result = new LoginResponseDTO();
+                _response.StatusCode = HttpStatusCode.TooManyRequests;
+                _response.IsSuccess = false;
+                _response.ErrorMessages.Add($"ใส่รหัสผ่านผิดหลายครั้ง บัญชีถูกล็อกชั่วคราว กรุณารอ {minutes} นาทีแล้วลองใหม่");
+                return StatusCode((int)HttpStatusCode.TooManyRequests, _response);
+            }
+
+            bool isValid = userFromDb != null && await _userManager.CheckPasswordAsync(userFromDb, model.Password);
+            if (userFromDb != null && !AccountSuspension.IsSuspended(userFromDb))
+            {
+                if (isValid) await _userManager.ResetAccessFailedCountAsync(userFromDb);
+                else
+                {
+                    await _userManager.AccessFailedAsync(userFromDb);
+                    if (await _userManager.IsLockedOutAsync(userFromDb))
+                        await audit.LogAsync(AuditActions.AccountLockedOut, userFromDb.UserName, actor: userFromDb.UserName);
+                }
+            }
 
             if (isValid == false)
             {
+                await audit.LogAsync(AuditActions.LoginFailed, model.UserName, actor: model.UserName);
                 _response.Result = new LoginResponseDTO();
                 _response.StatusCode = HttpStatusCode.BadRequest;
                 _response.IsSuccess = false;
                 _response.ErrorMessages.Add("Username or password is incorrect");
                 return BadRequest(_response);
+            }
+
+            if (AccountSuspension.IsSuspended(userFromDb!))
+            {
+                await audit.LogAsync(AuditActions.LoginBlockedSuspended, userFromDb.UserName, actor: userFromDb.UserName);
+                _response.Result = new LoginResponseDTO();
+                _response.StatusCode = HttpStatusCode.Forbidden;
+                _response.IsSuccess = false;
+                _response.ErrorMessages.Add("บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ");
+                return StatusCode((int)HttpStatusCode.Forbidden, _response);
             }
 
             //we have to generate JWT Token
@@ -143,6 +179,7 @@ namespace ProjectScientDay2568.Controllers
                 return BadRequest(_response);
             }
 
+            await audit.LogAsync(AuditActions.LoginSuccess, userFromDb.UserName, new { role = roles.FirstOrDefault() }, actor: userFromDb.UserName);
             _response.StatusCode = HttpStatusCode.OK;
             _response.IsSuccess = true;
             _response.Result = loginResponse;
@@ -150,8 +187,9 @@ namespace ProjectScientDay2568.Controllers
         }
 
         [HttpPost("reset-password")]
+        [EnableRateLimiting(RateLimitPolicies.Sensitive)]
         [AllowAnonymous]
-        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest dto)
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest dto, [FromServices] AuditLogService audit)
         {
             var res = new ApiResponse();
             try
@@ -173,6 +211,8 @@ namespace ProjectScientDay2568.Controllers
                 var result = await _userManager.ResetPasswordAsync(user, token, dto.NewPassword);
                 if (!result.Succeeded)
                 {
+                    await audit.LogAsync(AuditActions.PasswordResetFailed, user.UserName,
+                        new { reason = string.Join(", ", result.Errors.Select(e => e.Code)) }, actor: user.UserName);
                     res.IsSuccess = false;
                     res.StatusCode = HttpStatusCode.BadRequest;
                     res.ErrorMessages.AddRange(result.Errors.Select(e => e.Description));
@@ -181,6 +221,7 @@ namespace ProjectScientDay2568.Controllers
 
                 // (แนะนำ) บังคับ logout ทุกเครื่อง: update security stamp
                 await _userManager.UpdateSecurityStampAsync(user);
+                await audit.LogAsync(AuditActions.PasswordResetCompleted, user.UserName, actor: user.UserName);
 
                 res.StatusCode = HttpStatusCode.OK;
                 res.Result = new { message = "รีเซ็ตรหัสสำเร็จ" };

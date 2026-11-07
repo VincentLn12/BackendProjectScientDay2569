@@ -51,7 +51,9 @@ namespace ProjectScientDay2568.Controllers
                     query = query.Where(r => r.TrainingtopicId == trainingtopicId.Value);
                 }
 
-                var list = await query.OrderByDescending(r => r.RegisteredAt).ToListAsync();
+                var list = await query.AsNoTracking().OrderByDescending(r => r.RegisteredAt).ToListAsync();
+                // endpoint นี้ไม่ได้จำกัดสิทธิ์ จึงไม่ส่งลิงก์กลุ่มไลน์
+                foreach (var r in list) r.Trainingtopic?.HideLineGroup();
 
                 response.StatusCode = HttpStatusCode.OK;
                 response.IsSuccess = true;
@@ -85,9 +87,18 @@ namespace ProjectScientDay2568.Controllers
 
                 var list = await _context.TrainingRegistrations
                     .Include(r => r.Trainingtopic)
+                    .AsNoTracking()
                     .Where(r => r.UserId == userId)
                     .OrderByDescending(r => r.RegisteredAt)
                     .ToListAsync();
+
+                // ลิงก์กลุ่มไลน์ให้เฉพาะรายการที่ยังไม่ยกเลิก
+                foreach (var r in list)
+                {
+                    if (r.Trainingtopic == null) continue;
+                    if (r.Status == "ยกเลิกแล้ว") r.Trainingtopic.HideLineGroup();
+                    else r.Trainingtopic.HasLineGroup = !string.IsNullOrEmpty(r.Trainingtopic.LineGroupUrl) || !string.IsNullOrEmpty(r.Trainingtopic.LineQrPath);
+                }
 
                 response.StatusCode = HttpStatusCode.OK;
                 response.IsSuccess = true;

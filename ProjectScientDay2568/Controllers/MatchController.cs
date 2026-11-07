@@ -1,4 +1,8 @@
-﻿ using ProjectScientDay2568.Models.Dtos.Match;
+﻿using System.Net;
+using Microsoft.AspNetCore.Mvc;
+using ProjectScientDay2568.Models.Dtos.Match;
+using ProjectScientDay2568.Service;
+using ProjectScientDay2568.Utility;
 
 namespace ProjectScientDay2568.Controllers
 {
@@ -13,7 +17,7 @@ namespace ProjectScientDay2568.Controllers
         }
 
         [HttpGet("competition-level/{competitionLevelID}/matches")]
-        public async Task<IActionResult> GetMatches(int competitionLevelID )
+        public async Task<IActionResult> GetMatches(int competitionLevelID)
         {
             var response = new ApiResponse();
             try
@@ -30,14 +34,33 @@ namespace ProjectScientDay2568.Controllers
             }
             return StatusCode((int)response.StatusCode, response);
         }
- 
-        [HttpPost("competition-level/{competitionLevelID}/generate")]
-        public async Task<IActionResult> GenerateBracket(int competitionLevelID ,[FromQuery] int? sampleSize = null)
+
+        [HttpGet("competition-level/{competitionLevelID}/logs")]
+        public async Task<IActionResult> GetDrawLogs(int competitionLevelID)
         {
             var response = new ApiResponse();
             try
             {
-                var matches = await _matchService.GenerateMatchBracketAsync(competitionLevelID ,sampleSize);
+                var logs = await _matchService.GetDrawLogsAsync(competitionLevelID);
+                response.StatusCode = HttpStatusCode.OK;
+                response.Result = logs;
+            }
+            catch (Exception ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.BadRequest;
+                response.ErrorMessages.Add(ex.Message);
+            }
+            return StatusCode((int)response.StatusCode, response);
+        }
+
+        [HttpPost("competition-level/{competitionLevelID}/generate")]
+        public async Task<IActionResult> GenerateBracket(int competitionLevelID, [FromQuery] int? sampleSize = null)
+        {
+            var response = new ApiResponse();
+            try
+            {
+                var matches = await _matchService.GenerateMatchBracketAsync(competitionLevelID, sampleSize);
                 response.StatusCode = HttpStatusCode.Created;
                 response.Result = matches;
             }
@@ -70,45 +93,25 @@ namespace ProjectScientDay2568.Controllers
             return StatusCode((int)response.StatusCode, response);
         }
 
-        //[HttpGet("competition-level/{competitionLevelID}/summary")]
-        //public async Task<IActionResult> SummaryTournament(int competitionLevelID)
-        //{
-        //    var response = new ApiResponse();
-        //    try
-        //    {
-        //        var resultMessage = await _matchService.GetTournamentSummaryAsync(competitionLevelID);
-        //        response.StatusCode = HttpStatusCode.OK;
-        //        response.Result = resultMessage;
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        response.IsSuccess = false;
-        //        response.StatusCode = HttpStatusCode.InternalServerError;
-        //        response.ErrorMessages.Add(ex.Message);
-        //    }
+        [HttpPost("log/{logId}/rollback")]
+        public async Task<IActionResult> RollbackToLog(int logId)
+        {
+            var response = new ApiResponse();
+            try
+            {
+                var resultMessage = await _matchService.RollbackToLogAsync(logId);
+                response.StatusCode = HttpStatusCode.OK;
+                response.Result = resultMessage;
+            }
+            catch (Exception ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.InternalServerError;
+                response.ErrorMessages.Add(ex.Message);
+            }
 
-        //    return StatusCode((int)response.StatusCode, response);
-        //}
-
-        //[HttpGet("competition-level/{competitionLevelID}/finalize")]
-        //public async Task<IActionResult> FinalizeTournament(int competitionLevelID)
-        //{
-        //    var response = new ApiResponse();
-        //    try
-        //    {
-        //        var resultMessage = await _matchService.FinalizeTournamentAsync(competitionLevelID);
-        //        response.StatusCode = HttpStatusCode.OK;
-        //        response.Result = resultMessage;
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        response.IsSuccess = false;
-        //        response.StatusCode = HttpStatusCode.InternalServerError;
-        //        response.ErrorMessages.Add(ex.Message);
-        //    }
-
-        //    return StatusCode((int)response.StatusCode, response);
-        //}
+            return StatusCode((int)response.StatusCode, response);
+        }
 
         [HttpDelete("competition-level/{competitionLevelID}/cancel-round/{roundNumber}")]
         public async Task<IActionResult> CancelRoundMatch(int competitionLevelID, int roundNumber)

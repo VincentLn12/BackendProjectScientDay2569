@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using AutoMapper;
 using AutoMapper.QueryableExtensions;
 using Microsoft.EntityFrameworkCore;
@@ -37,6 +37,38 @@ namespace ProjectScientDay2568.Service
             if (closeDate.HasValue && DateTime.Now > closeDate.Value)
                 throw new InvalidOperationException("ปิดรับลงทะเบียนแล้ว ไม่สามารถแก้ไขหรือจัดการทีมได้");
         }
+
+        private static readonly string[] AllowedProjectExtensions = { ".pdf", ".doc", ".docx", ".zip", ".rar" };
+
+        // กันเคสกิจกรรมที่ต้องส่งโครงงาน แต่สมัครโดยไม่มีไฟล์/ชื่อโครงงาน (staff/admin ข้ามได้)
+        private async Task EnsureProjectProvidedAsync(int? competitionLevelId, IFormFile? file, string? projectName)
+        {
+            if (file != null && file.Length > 0)
+            {
+                var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+                if (!AllowedProjectExtensions.Contains(ext))
+                    throw new ArgumentException("ไฟล์โครงงานต้องเป็น .pdf .doc .docx .zip หรือ .rar เท่านั้น");
+            }
+
+            if (_userContext.IsStaffOrAdmin) return;
+
+            if (!competitionLevelId.HasValue)
+                throw new KeyNotFoundException("ไม่พบระดับการแข่งขัน");
+
+            var requiresProject = await _context.CompetitionLevels
+                .Where(level => level.CompetitionLevelID == competitionLevelId.Value)
+                .Select(level => level.CompetitionYear!.Competition!.RequiresProject)
+                .SingleOrDefaultAsync();
+
+            if (!requiresProject) return;
+
+            if (string.IsNullOrWhiteSpace(projectName))
+                throw new ArgumentException("กิจกรรมนี้ต้องระบุชื่อโครงงาน");
+
+            if (file == null || file.Length == 0)
+                throw new ArgumentException("กิจกรรมนี้ต้องแนบไฟล์โครงงาน");
+        }
+
         public async Task<List<TeamDto>> GetAllTeamAsync()
         {
             return await _context.Teams
@@ -80,6 +112,13 @@ namespace ProjectScientDay2568.Service
 
             // ✅ ให้ EF ดึงเฉพาะฟิลด์ที่ TeamDto ต้องใช้ (ผ่าน AutoMapper)
             var all = await baseQuery
+                // หน้ารออนุมัติ: ให้ทีมสถานะ "สมัคร" อยู่ก่อน และทีมที่
+                // ลงทะเบียนเข้างานแล้วอยู่ท้ายรายการเสมอ
+                .OrderBy(t => t.Status == SD.TeamStatus.Verified ? 0
+                    : t.Status == SD.TeamStatus.ProjectRevision ? 1
+                    : t.Status == SD.TeamStatus.Disqualified ? 2
+                    : 3)
+                .ThenByDescending(t => t.RegistrationDateTime)
                 .ProjectTo<TeamDto>(_mapper.ConfigurationProvider)
                 .ToListAsync();
 
@@ -214,6 +253,59 @@ namespace ProjectScientDay2568.Service
                 NameOrdinal = newTeam.NameOrdinal
             };
         }
+        /// <summary>ทีมทั้งหมดของผู้ใช้ทุกปี/ทุกกิจกรรม สำหรับหน้าประวัติการลงทะเบียน (ใหม่สุดก่อน)</summary>
+        public async Task<List<MyRegistrationDto>> GetMyRegistrationsAsync(string userId)
+        {
+            return await _context.Teams
+                .AsNoTracking()
+                .Where(t => t.UserId == userId && t.CompetitionLevelID != null)
+                .Select(t => new MyRegistrationDto
+                {
+                    TeamID = t.TeamID,
+                    NameOrdinal = t.NameOrdinal,
+                    Status = (int)t.Status,
+                    RegistrationDateTime = t.RegistrationDateTime,
+                    School_code = t.school_code,
+                    school_name = t.schools != null ? t.schools.school_name : null,
+                    province = t.schools != null ? t.schools.province : null,
+                    district = t.schools != null ? t.schools.district : null,
+                    ProjectName = t.TeamProjects
+                        .OrderByDescending(p => p.TeamProjectID)
+                        .Select(p => p.ProjectName)
+                        .FirstOrDefault(),
+                    ProjectPDFLink = t.TeamProjects
+                        .OrderByDescending(p => p.TeamProjectID)
+                        .Select(p => p.ProjectPDFLink)
+                        .FirstOrDefault(),
+                    HasCertificate = _context.TeamCertificates.Any(tc => tc.TeamID == t.TeamID),
+                    MainFilledCount = t.Students!.Count(s => s.IsMainMember),
+                    ReserveFilledCount = t.Students!.Count(s => !s.IsMainMember),
+
+                    CompetitionLevelID = t.CompetitionLevel!.CompetitionLevelID,
+                    LevelName = t.CompetitionLevel.EducationLevel!.LevelName,
+                    CompetitionDateTime = t.CompetitionLevel.CompetitionDateTime,
+                    MainPlayersCount = t.CompetitionLevel.MainPlayersCount,
+                    ReservePlayersCount = t.CompetitionLevel.ReservePlayersCount,
+                    IsCertificateNumberGenerated = t.CompetitionLevel.IsCertificateNumberGenerated,
+
+                    CompetitionYearID = t.CompetitionLevel.CompetitionYearID,
+                    CompetitionName = t.CompetitionLevel.CompetitionYear!.Competition!.CompetitionName,
+                    RequiresProject = t.CompetitionLevel.CompetitionYear.Competition.RequiresProject,
+                    RegistrationMode = t.CompetitionLevel.CompetitionYear.RegistrationMode,
+                    AdvisorCount = t.CompetitionLevel.CompetitionYear.AdvisorCount,
+                    MaxStudentsPerSchool = t.CompetitionLevel.CompetitionYear.MaxStudentsPerSchool,
+                    RegistrationLocation = t.CompetitionLevel.CompetitionYear.RegistrationLocation,
+
+                    YearID = t.CompetitionLevel.CompetitionYear.YearID,
+                    YearNumber = t.CompetitionLevel.CompetitionYear.Year!.YearNumber,
+                    YearName = t.CompetitionLevel.CompetitionYear.Year.YearName,
+                    RegistrationCloseDate = t.CompetitionLevel.CompetitionYear.Year.RegistrationCloseDate,
+                })
+                .OrderByDescending(r => r.YearNumber)
+                .ThenByDescending(r => r.RegistrationDateTime)
+                .ToListAsync();
+        }
+
         public async Task<List<TeamDto>> GetAllTeamcompetitionLevelAsync(int competitionLevelID, string userId)
         {
             var team = await _context.Teams
@@ -268,6 +360,7 @@ namespace ProjectScientDay2568.Service
                 throw new ArgumentNullException(nameof(teamDto), "team cannot be null.");
 
             await EnsureRegistrationOpenAsync(teamDto.CompetitionLevelID);
+            await EnsureProjectProvidedAsync(teamDto.CompetitionLevelID, file, projectName);
 
             var hasSchool = await _context.School
                 .AnyAsync(s => s.school_code == teamDto.school_code);
@@ -419,6 +512,31 @@ namespace ProjectScientDay2568.Service
 
             await _context.SaveChangesAsync();
             return _mapper.Map<TeamRegisterDto>(team);
+        }
+        public async Task ChangeTeamLevelAsync(ChangeTeamLevelDto dto)
+        {
+            if (dto == null || dto.TeamId <= 0 || dto.TargetCompetitionLevelId <= 0)
+                throw new ArgumentException("ข้อมูลการย้ายระดับชั้นไม่ถูกต้อง");
+
+            var team = await _context.Teams.FirstOrDefaultAsync(t => t.TeamID == dto.TeamId);
+            if (team == null)
+                throw new KeyNotFoundException("ไม่พบทีมที่ระบุ");
+
+            // ❌ ไม่อนุญาตให้ย้ายหากทีมลงทะเบียน/เช็คอินเข้างานแล้ว (CheckedIn)
+            if (team.Status == SD.TeamStatus.CheckedIn)
+            {
+                throw new InvalidOperationException("ไม่อนุญาตให้ย้ายระดับชั้น เนื่องจากทีมนี้ได้ลงทะเบียนเช็คอินเข้างานเรียบร้อยแล้ว");
+            }
+
+            var targetLevel = await _context.CompetitionLevels.FirstOrDefaultAsync(cl => cl.CompetitionLevelID == dto.TargetCompetitionLevelId);
+            if (targetLevel == null)
+                throw new KeyNotFoundException("ไม่พบระดับชั้นปลายทางที่ระบุ");
+
+            if (team.CompetitionLevelID == dto.TargetCompetitionLevelId)
+                throw new InvalidOperationException("ทีมนี้อยู่ในระดับชั้นดังกล่าวอยู่แล้ว");
+
+            team.CompetitionLevelID = dto.TargetCompetitionLevelId;
+            await _context.SaveChangesAsync();
         }
     }
 }

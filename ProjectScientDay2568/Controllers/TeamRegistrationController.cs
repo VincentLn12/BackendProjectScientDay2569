@@ -22,6 +22,26 @@ namespace ProjectScientDay2568.Controllers
             return StatusCode((int)response.StatusCode, response);
         }
 
+        [HttpGet("my")]
+        public async Task<IActionResult> GetMyRegistrations()
+        {
+            var response = new ApiResponse();
+            try
+            {
+                // UserContextService.UserId โยน exception ถ้ายังไม่ได้ล็อกอิน
+                var userId = _userContext.UserId;
+                response.StatusCode = HttpStatusCode.OK;
+                response.Result = await _team.GetMyRegistrationsAsync(userId);
+            }
+            catch (Exception ex)
+            {
+                response.IsSuccess = false;
+                response.StatusCode = HttpStatusCode.InternalServerError;
+                response.ErrorMessages.Add(ex.Message);
+            }
+            return HandleResponse(response);
+        }
+
         [HttpGet("teamcompetitionLevel")]
         public async Task<IActionResult> GetTeamcompetitionLevel(int competitionLevelID)
         {
